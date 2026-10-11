@@ -101,12 +101,24 @@ if grep -qE '^module "mailer"' "$OLD_DIR"/*.tf; then
 fi
 
 log "init both roots"
-terraform -chdir="$NEW_DIR" init -input=false >/dev/null
-terraform -chdir="$OLD_DIR" init -input=false >/dev/null
+# Output kept on failure: under `set -e` a silent init failure ends the script
+# with nothing on screen to say why.
+init_root() {
+  local out
+  out="$(terraform -chdir="$1" init -input=false -no-color 2>&1)" || { printf '%s\n' "$out" >&2; die "init failed in $1"; }
+}
+init_root "$NEW_DIR"
+init_root "$OLD_DIR"
 
-new_count="$(terraform -chdir="$NEW_DIR" state list 2>/dev/null | wc -l | tr -d ' ')"
+# `state list` EXITS 1 on a root with no state yet ("No state file was
+# found!") — which is exactly the state this root must be in. Under
+# `set -o pipefail` that used to end the script right here, silently; so
+# capture the listing on its own and only then count.
+new_list="$(terraform -chdir="$NEW_DIR" state list 2>/dev/null || true)"
+new_count="$(printf '%s' "$new_list" | grep -c . || true)"
 [[ "$new_count" == 0 ]] || die "insolvia-services/$ENV state already holds $new_count resources — has this already run? Nothing changed."
-old_count="$(terraform -chdir="$OLD_DIR" state list | grep -c '^module\.mailer\.' || true)"
+old_list="$(terraform -chdir="$OLD_DIR" state list)" || die "could not list insolvia/$ENV state — nothing changed."
+old_count="$(printf '%s\n' "$old_list" | grep -c '^module\.mailer\.' || true)"
 [[ "$old_count" -gt 0 ]] || die "insolvia/$ENV state holds no module.mailer — nothing to move."
 ok "insolvia/$ENV holds $old_count module.mailer resources; insolvia-services/$ENV is empty"
 
