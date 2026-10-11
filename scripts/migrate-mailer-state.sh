@@ -225,23 +225,41 @@ if [[ $code != 0 ]]; then
   die "insolvia/$ENV plan failed — restored."
 fi
 terraform -chdir="$OLD_DIR" show -json "$WORK/old.tfplan" > "$WORK/old-plan.json"
+# What the move itself could break is the MAILER: insolvia's code no longer
+# declares it, so any planned change to a mailer address is the move going
+# wrong — always refused.
 bad="$(jq -r '[.resource_changes[]?
-  | select((.change.actions | index("delete")) or (.address | test("mailer")))
+  | select(.address | test("mailer"))
   | select(.change.actions != ["no-op"] and .change.actions != ["read"])
   | "\(.change.actions | join("+"))  \(.address)"] | .[]' "$WORK/old-plan.json")"
 if [[ -n "$bad" ]]; then
   printf '%s\n' "$bad" >&2
   restore
-  die "insolvia/$ENV would delete, replace or touch mailer resources — restored."
+  die "insolvia/$ENV would touch mailer resources — restored."
 fi
+# Everything ELSE in insolvia's plan is that environment lagging insolvia's
+# main — prod had not been applied for six weeks when this first ran, and its
+# plan replaced the Cognito managed-login branding (from #405). Those changes
+# would apply on insolvia's next promotion with or without this move, so they
+# are shown — destroys and replaces called out — and kept only on a human's yes.
 other="$(jq -r '[.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])
   | "\(.change.actions | join("+"))  \(.address)"] | .[]' "$WORK/old-plan.json")"
 if [[ -n "$other" ]]; then
-  warn "insolvia/$ENV has OTHER pending changes (not caused by this move — commits on"
-  warn "main that $ENV has not applied yet). They are not destroys and not the mailer:"
+  warn "insolvia/$ENV has OTHER pending changes — not the mailer, not caused by this move;"
+  warn "commits on insolvia's main that $ENV has not applied yet:"
   printf '%s\n' "$other" | sed 's/^/    /' >&2
+  if printf '%s\n' "$other" | grep -q 'delete'; then
+    warn "Some of them DESTROY or REPLACE a resource (the lines with 'delete'). They"
+    warn "will happen on insolvia's next $ENV release regardless of this move; read them."
+  fi
+  warn "Full diff: terraform -chdir=$OLD_DIR show $WORK/old.tfplan (another terminal)."
+  read -r -p "Keep the move? [y/N] " reply
+  if [[ "$reply" != [yY] ]]; then
+    restore
+    die "declined — restored."
+  fi
 fi
-ok "insolvia/$ENV: no destroy, no mailer change"
+ok "insolvia/$ENV: no mailer change"
 
 echo
 ok "Migrated insolvia/$ENV → insolvia-services/$ENV. Backup kept at $BACKUP."
