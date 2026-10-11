@@ -105,6 +105,17 @@ locals {
   # adapters/aws/config.py, in all three Lambdas.
   service_registry_json = jsonencode({ insolvia_api = local.insolvia_api_service })
 
+  # MAILER_RECIPIENT_POLICY_JSON — read by adapters/recipient_policy.py in the
+  # ingress (admission) and sender (send-time re-check) Lambdas; the format is
+  # core/recipients.py's. "unrestricted" is spelled out because the Lambda
+  # reads a missing or malformed value as "refuse everyone" — so dropping this
+  # variable from a Lambda fails closed, never open.
+  recipient_policy_json = var.recipient_allowlist == null ? jsonencode({ mode = "unrestricted" }) : jsonencode({
+    mode      = "allowlist"
+    domains   = var.recipient_allowlist.domains
+    addresses = var.recipient_allowlist.addresses
+  })
+
   # MAILER_CONFIGURATION_SET_REGISTRY_JSON — read by configuration_set_registry()
   # in adapters/aws/config.py, feedback Lambda only. Maps an SES configuration
   # set name back to the service that owns it, for feedback events that carry
@@ -784,6 +795,7 @@ resource "aws_lambda_function" "ingress" {
       MAILER_MESSAGES_TABLE        = aws_dynamodb_table.messages.name
       MAILER_SUPPRESSIONS_TABLE    = aws_dynamodb_table.suppressions.name
       MAILER_SERVICE_REGISTRY_JSON = local.service_registry_json
+      MAILER_RECIPIENT_POLICY_JSON = local.recipient_policy_json
     }
   }
   lifecycle { ignore_changes = [image_uri] }
@@ -806,6 +818,7 @@ resource "aws_lambda_function" "sender" {
       MAILER_MESSAGES_TABLE        = aws_dynamodb_table.messages.name
       MAILER_SUPPRESSIONS_TABLE    = aws_dynamodb_table.suppressions.name
       MAILER_SERVICE_REGISTRY_JSON = local.service_registry_json
+      MAILER_RECIPIENT_POLICY_JSON = local.recipient_policy_json
     }
   }
   lifecycle { ignore_changes = [image_uri] }

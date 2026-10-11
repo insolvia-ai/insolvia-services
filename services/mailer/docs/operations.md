@@ -75,6 +75,24 @@ the send queue, they simply accumulate there (watch the queue-age alarm) until
 sending is re-enabled. This account has exactly one mailer tenant today, so
 this switch effectively pauses the whole platform's outbound mail.
 
+## Recipient refused (`mailer.recipient_refused`)
+
+The caller got a `422 RecipientNotAllowed`; the log line carries
+`service_id`, `application_message_id`, `reason`, `refused_count` and
+`stage` (`admission` or `send`), never the address.
+
+- `reason=not_allowlisted` — working as intended in staging. To let one
+  person receive staging mail, add their exact address to
+  `recipient_allowlist` in `infra/envs/staging/main.tf` (a PR; this repo is
+  public, so prefer an `@insolvia.ai` address over a personal one).
+- `reason=policy_unconfigured` / `policy_invalid` — the environment's
+  `MAILER_RECIPIENT_POLICY_JSON` is missing or malformed, so **every** send is
+  refused. Check the startup line `mailer.recipient_policy …` and the Lambda's
+  environment; the fix is a Terraform apply, never a console edit.
+
+Unlike the kill switch, a refusal does not queue: the message is gone, and
+the caller has to send again once the allowlist admits the recipient.
+
 ## DLQ recovery
 
 1. Inspect message identifiers and failure metadata only. Do not paste queue

@@ -16,14 +16,43 @@ its IAM role name, and the contract is the JSON schemas in
 
 1. An application role signs `POST /v1/services/<service>/messages` with AWS
    SigV4.
-2. The ingress Lambda verifies that the caller role is registered for the route.
+2. The ingress Lambda verifies that the caller role is registered for the route,
+   and that the recipient is inside this environment's allowlist (below).
 3. Mailer stores an internal manifest in S3 and enqueues a small SQS pointer.
-4. The sender Lambda validates the content, suppression state, kill switch, and
-   attachment scan results before calling SES.
+4. The sender Lambda validates the content, kill switch, recipient allowlist,
+   suppression state, and attachment scan results before calling SES.
 5. SES events are normalized and sent to the application's status queue.
 
 Attachments use `POST /v1/services/<service>/attachment-uploads` to obtain a
 15-minute presigned `PUT`; raw attachment bytes never pass through API Gateway.
+
+## Recipient allowlist — who an environment may mail at all
+
+Each environment states which recipients its mailer may send to, in
+`MAILER_RECIPIENT_POLICY_JSON` (format and matching rules:
+[`core/recipients.py`](src/insolvia_mailer/core/recipients.py)):
+
+| Environment | Policy | Set by |
+|---|---|---|
+| local (Docker + Mailpit) | unrestricted by default — Mailpit never relays, so there is no one to protect | `docker-compose.yml`; override from your shell to try another environment's list |
+| staging | `insolvia.ai` only (exact domain, not subdomains), plus any exact addresses named there | `recipient_allowlist` in `infra/envs/staging/main.tf` |
+| prod | unrestricted | `recipient_allowlist = null` in `infra/envs/prod/main.tf` — the module accepts null **only** for prod |
+
+A message with any recipient outside the list is **refused whole**, at
+admission, with `422 {"error": "RecipientNotAllowed", "reason": …}` — never
+stored, queued or partly delivered. The sender Lambda checks again before
+SES, so narrowing a list also stops what was already queued (those finish as
+a `reject` status event). Either refusal logs `mailer.recipient_refused` with
+a reason category and a count, never the address.
+
+**It fails closed.** If the variable is missing, empty or malformed, the
+mailer refuses *every* recipient (`reason: policy_unconfigured` /
+`policy_invalid`) and says so in a startup log line,
+`mailer.recipient_policy refuse-all (…)`. "Send to anyone" has to be written
+out as `{"mode": "unrestricted"}`.
+
+**Not covered:** mail Cognito sends itself (invitations with temporary
+passwords, reset codes) goes straight to SES and never passes through here.
 
 ## Suppression, and who is allowed to add to it
 
@@ -93,6 +122,13 @@ not part of the contract) are in [`CLAUDE.md`](CLAUDE.md).
 The development server uses the same Flask routes and schemas without SigV4.
 Product email is delivered only to Mailpit, which has no outbound relay
 configured.
+
+To run with staging's recipient allowlist instead of the unrestricted local
+default:
+
+```bash
+MAILER_RECIPIENT_POLICY_JSON='{"mode":"allowlist","domains":["insolvia.ai"]}' ./scripts/dev-up.sh
+```
 
 The insolvia repo's own `scripts/dev-up.sh` starts this same stack from a
 sibling `insolvia-services` checkout (or `$INSOLVIA_SERVICES_DIR`), so the

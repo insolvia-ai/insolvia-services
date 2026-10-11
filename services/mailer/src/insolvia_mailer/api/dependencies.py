@@ -12,6 +12,7 @@ from insolvia_mailer.core.ports import (
     MailerStore,
     RequestAuthorizer,
 )
+from insolvia_mailer.core.recipients import REFUSE_ALL, RecipientPolicy
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,9 @@ class ApiDependencies:
     store: MailerStore
     authorizer: RequestAuthorizer
     attachment_receiver: AttachmentReceiver | None = None
+    # Defaults to refusing every recipient: a composition that forgets to
+    # pass the environment's policy sends nothing rather than anything.
+    recipient_policy: RecipientPolicy = REFUSE_ALL
 
 
 def dependencies() -> ApiDependencies:
