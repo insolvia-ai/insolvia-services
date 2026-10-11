@@ -7,6 +7,7 @@ import threading
 from insolvia_mailer.adapters.memory.store import MemoryDelivery, MemoryStore
 from insolvia_mailer.core.mime import build_message
 from insolvia_mailer.core.ports import MailTransport
+from insolvia_mailer.core.recipients import RecipientPolicy
 
 logger = logging.getLogger("insolvia_mailer.development")
 
@@ -18,15 +19,18 @@ class MemoryDeliveryWorker:
     same way the real sender does. That check is the whole reason this takes
     the store rather than just its queue: an unsubscribe that works against
     AWS but silently does nothing in the Mailpit dev loop (issue 6.5) is a
-    difference you only discover in production.
+    difference you only discover in production. The recipient policy is
+    checked again here for the same reason the sender Lambda re-checks it.
     """
 
     def __init__(
         self,
         store: MemoryStore,
         transport: MailTransport,
+        recipient_policy: RecipientPolicy,
     ) -> None:
         self.store = store
+        self.recipient_policy = recipient_policy
         self.deliveries: queue.Queue[MemoryDelivery] = store.deliveries
         self.transport = transport
 
@@ -41,6 +45,17 @@ class MemoryDeliveryWorker:
         while True:
             delivery = self.deliveries.get()
             try:
+                refusal = self.recipient_policy.refusal([delivery.request.to_address])
+                if refusal:
+                    logger.warning(
+                        "mailer.recipient_refused service_id=%s "
+                        "application_message_id=%s reason=%s refused_count=%d "
+                        "stage=send",
+                        delivery.service.service_id,
+                        delivery.request.application_message_id,
+                        *refusal,
+                    )
+                    continue
                 if self.store.is_suppressed(delivery.request.to_address):
                     logger.info(
                         "development email suppressed service_id=%s "

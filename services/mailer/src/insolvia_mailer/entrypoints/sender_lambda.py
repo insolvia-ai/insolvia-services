@@ -12,6 +12,7 @@ from insolvia_mailer.adapters.aws.config import load_service_registry
 from insolvia_mailer.adapters.aws.status import event as status_event
 from insolvia_mailer.adapters.aws.status import publish
 from insolvia_mailer.adapters.aws.store import AwsStore
+from insolvia_mailer.adapters.recipient_policy import load_recipient_policy
 from insolvia_mailer.core.config import ServiceConfig
 from insolvia_mailer.core.errors import (
     AttachmentBlockedError,
@@ -20,12 +21,17 @@ from insolvia_mailer.core.errors import (
 )
 from insolvia_mailer.core.mime import AttachmentContent, build_message
 from insolvia_mailer.core.models import MessageRequest, recipient_hash
+from insolvia_mailer.core.recipients import RecipientPolicy
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 SAFE_SCAN = "NO_THREATS_FOUND"
 BLOCKED_SCANS = {"THREATS_FOUND", "UNSUPPORTED", "ACCESS_DENIED", "FAILED"}
+
+# Read once per container: Lambda environment variables cannot change under a
+# running container, and a configuration change starts new ones.
+RECIPIENT_POLICY = load_recipient_policy()
 
 
 def _string(item: dict[str, Any], key: str) -> str | None:
@@ -155,7 +161,30 @@ def _service_for_manifest(
     return service
 
 
-def _send_record(record: dict[str, Any], registry: dict[str, ServiceConfig]) -> None:
+def _refused_recipient(
+    policy: RecipientPolicy, service: ServiceConfig, request: MessageRequest
+) -> bool:
+    """The allowlist again, at send time. Admission already refused anything
+    outside it; this catches what was queued before the allowlist narrowed,
+    so tightening staging takes effect on the backlog too."""
+    refusal = policy.refusal([request.to_address])
+    if not refusal:
+        return False
+    logger.warning(
+        "mailer.recipient_refused service_id=%s application_message_id=%s "
+        "reason=%s refused_count=%d stage=send",
+        service.service_id,
+        request.application_message_id,
+        *refusal,
+    )
+    return True
+
+
+def _send_record(
+    record: dict[str, Any],
+    registry: dict[str, ServiceConfig],
+    recipient_policy: RecipientPolicy,
+) -> None:
     store = AwsStore()
     pointer = json.loads(record["body"])
     manifest_key = pointer["manifest_key"]
@@ -187,6 +216,24 @@ def _send_record(record: dict[str, Any], registry: dict[str, ServiceConfig]) -> 
                 request.category,
                 request.message_class,
                 "disabled",
+            ),
+        )
+        return
+    if _refused_recipient(recipient_policy, service, request):
+        # `reject` with a reason rather than a new status: the status-event
+        # contract is consumed by another repository, and a status it does
+        # not know would be a breaking change for a case that never reaches
+        # it in practice (admission refuses first).
+        _mark(store, record_key, "reject")
+        publish(
+            service,
+            status_event(
+                service,
+                request.application_message_id,
+                request.category,
+                request.message_class,
+                "reject",
+                reason="recipient is not allowed in this environment",
             ),
         )
         return
@@ -315,7 +362,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     failures = []
     for record in event.get("Records", []):
         try:
-            _send_record(record, registry)
+            _send_record(record, registry, RECIPIENT_POLICY)
         except RetryableError:
             failures.append({"itemIdentifier": record["messageId"]})
         except Exception:

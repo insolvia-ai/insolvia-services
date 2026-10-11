@@ -14,6 +14,7 @@ from insolvia_mailer.adapters.aws.auth import (
 )
 from insolvia_mailer.adapters.aws.config import load_service_registry
 from insolvia_mailer.adapters.aws.store import AwsStore
+from insolvia_mailer.adapters.recipient_policy import load_recipient_policy
 from insolvia_mailer.api.app_factory import create_app
 from insolvia_mailer.api.dependencies import ApiDependencies
 from insolvia_mailer.core.errors import AuthorizationError
@@ -23,6 +24,7 @@ app = create_app(
         services=load_service_registry(),
         store=AwsStore(),
         authorizer=IamAuthorizer(),
+        recipient_policy=load_recipient_policy(),
     )
 )
 _mangum_handler = Mangum(WsgiToAsgi(app), lifespan="off")  # type: ignore[no-untyped-call]

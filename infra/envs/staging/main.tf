@@ -62,6 +62,14 @@ data "aws_iam_role" "api" {
 # monthly cost with nothing to scan (see modules/mailer/variables.tf). Set
 # identically in both environments — not an environment-specific decision.
 #
+# recipient_allowlist: staging sends through real SES, so it mails only our own
+# domain — seed users, e2e accounts and hand-entered clients at any other
+# address are refused with a 422 at the mailer (the caller logs and carries
+# on). Add an exact address here, not a domain, to let one outside tester
+# receive staging mail. This is the precondition for SES production access
+# (docs/runbooks/ses-production-access.md): without it, leaving the sandbox
+# would let staging mail anyone.
+#
 # First apply in a fresh account needs an image before the Lambdas can be
 # created — see the bootstrap note at the top of modules/mailer/main.tf.
 module "mailer" {
@@ -76,6 +84,7 @@ module "mailer" {
   sender_address             = "no-reply@insolvia.ai"
   cors_allowed_origin        = "https://${var.app_subdomain}"
   enable_attachment_scanning = false
+  recipient_allowlist        = { domains = ["insolvia.ai"] }
   ecr_repository_url         = data.aws_ecr_repository.mailer.repository_url
   image_tag                  = local.environment
   tags                       = local.common_tags

@@ -10,6 +10,7 @@ from insolvia_mailer.adapters.aws.auth import (
 from insolvia_mailer.api.app_factory import create_app
 from insolvia_mailer.api.dependencies import ApiDependencies
 from insolvia_mailer.core.config import ServiceConfig
+from insolvia_mailer.core.recipients import RecipientPolicy
 from mangum import Mangum
 
 
@@ -40,6 +41,7 @@ def test_http_api_event_uses_shared_flask_routes_and_iam_context():
             services={"insolvia_api": service},
             store=store,
             authorizer=IamAuthorizer(),
+            recipient_policy=RecipientPolicy(unrestricted=True),
         )
     )
     adapter = Mangum(WsgiToAsgi(app), lifespan="off")
