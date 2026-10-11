@@ -1,0 +1,3 @@
+aws_region           = "us-east-1"
+github_repo          = "insolvia-ai/insolvia"
+github_services_repo = "insolvia-ai/insolvia-services"

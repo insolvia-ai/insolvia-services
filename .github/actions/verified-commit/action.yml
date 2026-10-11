@@ -1,0 +1,124 @@
+name: Verified commit
+description: >-
+  Resolve the commit a production deploy should ship, and refuse to proceed
+  unless staging has validated that exact commit.
+
+# WHY THIS EXISTS
+#
+# The release pipeline (release.yml) does not need this: its production stage
+# sits downstream of its staging stage in the same run, so "staging was green
+# for this commit" is guaranteed by `needs`. This action exists for the OTHER
+# way into production — dispatching a single service's prod workflow by hand —
+# which closes two gaps a bare dispatch leaves open:
+#
+#   1. A bare dispatch builds whatever `main` points at WHEN THE RUN STARTS —
+#      anything merged between your staging test and your dispatch would ride
+#      along silently. Callers pass an explicit `sha`, or accept main's HEAD —
+#      either way the resolved commit is echoed into the job summary, so what
+#      shipped is a matter of record rather than inference.
+#   2. Nothing else checks that the commit ever *worked* on staging.
+#
+# THE EVIDENCE IS A COMMIT STATUS, NOT A RUN CONCLUSION. The check reads the
+# `insolvia-services/staging-release` status that release.yml's `record` job stamps on a
+# commit at the exact moment its staging stage finishes green. It used to ask
+# "did the staging workflow's run succeed for this sha", but a release run's
+# conclusion no longer means that: the run also contains the production stage,
+# so a staging-green release that was never approved ends `cancelled`, and one
+# whose prod leg failed ends `failure` — both with staging genuinely validated.
+# The status is written when the fact becomes true and never depends on what
+# happened downstream. It also survives job renames, which a run- or job-name
+# lookup would not.
+#
+# The check is per-COMMIT, not per-service, deliberately: staging is one
+# orchestrated release, so a failure in any staging leg withholds the status
+# for every service at that commit. For a product shipped as a whole that is
+# the stronger claim — if a commit could not deploy cleanly to staging, none
+# of it should reach production.
+#
+# Callers need `statuses: read` on their GITHUB_TOKEN. Commits from before the
+# status existed (pre-pipeline history) carry no status and are treated as
+# unverified — promote them with `force: true` if you genuinely must.
+
+inputs:
+  sha:
+    description: >-
+      Commit to deploy. Empty means "main's current HEAD", resolved through the
+      API rather than the local checkout so the answer matches what GitHub will
+      actually build.
+    required: false
+    default: ""
+  force:
+    description: >-
+      Skip the staging-green check. For shipping a hotfix while staging is
+      broken for unrelated reasons — the run still requires the
+      `insolvia-production` environment's approval, and says loudly in the job
+      summary that the check was bypassed.
+    required: false
+    default: "false"
+
+outputs:
+  sha:
+    description: "The full 40-character commit SHA this deploy should ship."
+    value: ${{ steps.resolve.outputs.sha }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        INPUT_SHA: ${{ inputs.sha }}
+        FORCE: ${{ inputs.force }}
+      run: |
+        set -euo pipefail
+
+        if [[ -n "$INPUT_SHA" ]]; then
+          # Resolve through the API: this both expands a short SHA to the full
+          # 40 characters and proves the commit exists on the remote. A typo'd
+          # SHA must fail here, not halfway through a deploy.
+          sha="$(gh api "repos/$REPO/commits/$INPUT_SHA" --jq .sha)" || {
+            echo "::error::Commit '$INPUT_SHA' does not exist on $REPO."
+            exit 1
+          }
+        else
+          sha="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+        fi
+        subject="$(gh api "repos/$REPO/commits/$sha" --jq .commit.message | head -1)"
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Deploying \`${sha:0:7}\`"
+          echo
+          echo "> $subject"
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [[ "$FORCE" == "true" ]]; then
+          echo "::warning::Staging-green check BYPASSED (force=true) for ${sha:0:7}."
+          {
+            echo ":warning: **Staging check bypassed** (\`force: true\`)."
+            echo "This commit was not verified against a staging release."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        # The combined-status endpoint returns the LATEST status per context,
+        # so a re-stamped commit reads correctly and a missing context reads
+        # as "missing" rather than an empty error.
+        state="$(gh api "repos/$REPO/commits/$sha/status" \
+          --jq '[.statuses[] | select(.context == "insolvia-services/staging-release")][0].state // "missing"')"
+
+        if [[ "$state" != "success" ]]; then
+          echo "::error::Commit ${sha:0:7} has no successful insolvia-services/staging-release status (found: $state) — refusing to deploy to production."
+          {
+            echo ":no_entry: **Blocked.** Staging has not validated \`${sha:0:7}\` (status: \`$state\`)."
+            echo
+            echo "Merge the commit and let the release pipeline deploy staging first, or"
+            echo "re-dispatch with \`force: true\` if staging is broken for unrelated reasons."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        echo ":white_check_mark: Verified: staging released \`${sha:0:7}\` green." >> "$GITHUB_STEP_SUMMARY"

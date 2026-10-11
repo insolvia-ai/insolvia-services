@@ -1,0 +1,26 @@
+{
+  "__comment": "Reference copy of the trust policy for insolvia-shared-deploy-role. The authoritative definition is data.aws_iam_policy_document.github_assume in infra/envs/ci-trust/main.tf, applied by a human, never CI. Two repositories assume the role, insolvia and insolvia-services, each in both subject forms: the immutable numeric-id form the org enforces (repo:<org>@<org_id>/<repo>@<repo_id>, see infra/envs/ci-trust/variables.tf) and the mutable owner/name form. The org login is lowercase. Replace <ACCOUNT_ID> before manual use.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:insolvia-ai@305033818/insolvia@1312821833:*",
+            "repo:insolvia-ai/insolvia:*",
+            "repo:insolvia-ai@305033818/insolvia-services@1414426760:*",
+            "repo:insolvia-ai/insolvia-services:*"
+          ]
+        }
+      }
+    }
+  ]
+}

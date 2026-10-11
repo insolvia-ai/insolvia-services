@@ -1,0 +1,246 @@
+name: Release
+
+# The whole path to production for this repo, one run per merge to `main`:
+#
+#   changes → shared → staging (mailer) → record → promote (approval) → prod (mailer)
+#
+# The same shape as the insolvia repo's release.yml, which this one was cut
+# from on 2026-10-11, minus every leg that stayed behind. Two pipelines now
+# release into one account; what keeps them apart is that each owns its own
+# Terraform state keys and container tags. Two orderings still cross the repo
+# boundary and are worth knowing before you debug one:
+#
+#   • `shared` runs FIRST here and nowhere else. insolvia's env roots look up
+#     the zone, the wildcard cert and every service's container repository BY
+#     NAME, so a merge here that adds an ECR repository for a new insolvia
+#     service must land (and release) before the insolvia PR that uses it.
+#
+#   • The mailer needs insolvia's API to exist (it looks up the API's execution
+#     role by name) and insolvia's API reads the mailer's hostname from its own
+#     variables. Neither repo waits on the other at deploy time; the only hard
+#     ordering is a fresh account, covered in docs/runbooks/aws-bootstrap.md.
+#
+# The prod stage PROMOTES — it never rebuilds. `record` guarantees the mailer
+# has a `sha-<commit>` tag at every staging-green commit, including ones that
+# did not change it, so the prod leg always has an image to resolve.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Run every leg, ignoring which paths changed"
+        required: false
+        default: false
+        type: boolean
+
+# A called workflow cannot request a permission the CALLER does not hold — the
+# run is rejected before any job starts, with no logs. This block is the union
+# of what every called workflow declares plus this workflow's own jobs.
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  statuses: write
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      mailer: ${{ steps.f.outputs.mailer }}
+      shared: ${{ steps.f.outputs.shared }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The diff base is the newest ancestor staging released green — not
+      # `github.event.before` — so a leg an earlier run lost is retried. The
+      # script's header has the long form.
+      - id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          ALL: ${{ inputs.all }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          candidates="$(git rev-list --first-parent --max-count=200 "$SHA^" 2>/dev/null || true)"
+          base="$(printf '%s\n' "$candidates" | .github/scripts/release-diff-base.sh)"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+      - id: f
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          all_legs() { for s in mailer shared; do echo "$s=true" >> "$GITHUB_OUTPUT"; done; }
+
+          if [ -z "$BASE" ] || [ "$BASE" = "all" ]; then
+            echo "No usable diff base — running every leg."
+            all_legs
+            exit 0
+          fi
+
+          files="$(git diff --name-only "$BASE" "$SHA")"
+          if [ -z "$files" ]; then
+            echo "::warning::Empty diff against $BASE — running every leg rather than nothing."
+            all_legs
+            exit 0
+          fi
+          echo "Changed since $BASE:"
+          printf '%s\n' "$files" | sed 's/^/  /'
+
+          emit() {
+            if printf '%s\n' "$files" | grep -qE "$2"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"; echo "$1 -> true"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"; echo "$1 -> false"
+            fi
+          }
+
+          emit mailer '^(services/mailer/|infra/envs/(staging|prod)/|infra/modules/mailer/|\.github/(workflows/(mailer-staging|release)\.yml|scripts/release-diff-base\.sh))'
+          emit shared '^(infra/envs/shared/|infra/modules/(email|dev_fixtures)/|\.github/workflows/(shared-infra-deploy|release)\.yml)'
+
+  shared:
+    needs: changes
+    if: ${{ needs.changes.outputs.shared == 'true' }}
+    uses: ./.github/workflows/shared-infra-deploy.yml
+    secrets: inherit
+
+  # `!failure()` alone ignores a CANCELLED need, and a cancelled shared apply
+  # is one that may not have happened — hence the explicit result check.
+  staging:
+    needs: [changes, shared]
+    if: ${{ !cancelled() && !failure() && (needs.shared.result == 'success' || needs.shared.result == 'skipped') && needs.changes.outputs.mailer == 'true' }}
+    uses: ./.github/workflows/mailer-staging.yml
+    secrets: inherit
+
+  # Stamp the commit staging-green (insolvia-services/staging-release) — the
+  # evidence verified-commit reads for a hand-dispatched prod deploy, and the
+  # diff base the next run's `changes` job looks for. Before stamping, make
+  # sure the mailer has a `sha-<commit>` tag: when this push did not change
+  # it, tag the digest staging is serving.
+  record:
+    needs: [changes, shared, staging]
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: insolvia-services-terraform-staging
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      statuses: write
+    steps:
+      - name: Refuse to record a release with a cancelled leg
+        if: ${{ contains(needs.*.result, 'cancelled') }}
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "::error::A staging leg was cancelled, so staging did not fully deploy this commit. Re-run the cancelled jobs; do not promote this run."
+          echo "$RESULTS" | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          exit 1
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Ensure the mailer has a sha-tagged image for this commit
+        env:
+          SHA: ${{ github.sha }}
+          REPO: insolvia-shared-mailer
+        run: |
+          set -euo pipefail
+          if aws ecr describe-images --repository-name "$REPO" \
+              --image-ids "imageTag=sha-$SHA" >/dev/null 2>&1; then
+            echo "$REPO: sha-$SHA exists (built by this run)."
+            exit 0
+          fi
+          manifest="$(aws ecr batch-get-image \
+            --repository-name "$REPO" \
+            --image-ids imageTag=staging \
+            --query 'images[0].imageManifest' --output text)"
+          if [ -z "$manifest" ] || [ "$manifest" = "None" ]; then
+            echo "::error::$REPO has no 'staging' marker tag to copy — has the mailer ever deployed?"
+            exit 1
+          fi
+          aws ecr put-image \
+            --repository-name "$REPO" \
+            --image-tag "sha-$SHA" \
+            --image-manifest "$manifest" >/dev/null
+          echo "$REPO: tagged the current staging image as sha-$SHA (mailer unchanged this push)."
+
+      - name: Mark the commit staging-green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=success \
+            -f context=insolvia-services/staging-release \
+            -f description="Staging release green — eligible for production" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # A newer staging-green run makes this one's pending promotion stale.
+  supersede:
+    needs: record
+    if: ${{ !cancelled() && needs.record.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run list --repo "${{ github.repository }}" \
+            --workflow release.yml --branch main --status waiting \
+            --json databaseId,number --jq \
+            '.[] | select(.number < ${{ github.run_number }}) | .databaseId' |
+          while read -r id; do
+            echo "Cancelling superseded release run $id (older pending promotion)."
+            gh run cancel "$id" --repo "${{ github.repository }}"
+          done
+
+  # The production gate: the insolvia-production environment's required
+  # reviewer, and its branch policy (main only).
+  promote:
+    needs: record
+    if: ${{ !cancelled() && needs.record.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: insolvia-production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          newer="$(gh run list --repo "${{ github.repository }}" \
+            --workflow release.yml --branch main --status waiting \
+            --json number --jq \
+            '[.[] | select(.number > ${{ github.run_number }})] | length')"
+          if [ "$newer" -gt 0 ]; then
+            echo "::error::A newer staging-validated release is already waiting — approve that one instead."
+            exit 1
+          fi
+          echo "### :rocket: Promotion approved — shipping \`${GITHUB_SHA:0:7}\` (mailer) to production." >> "$GITHUB_STEP_SUMMARY"
+
+  prod:
+    needs: promote
+    if: ${{ !cancelled() && needs.promote.result == 'success' }}
+    uses: ./.github/workflows/mailer-prod.yml
+    with:
+      sha: ${{ github.sha }}
+      gated: true
+    secrets: inherit

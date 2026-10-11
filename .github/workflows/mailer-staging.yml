@@ -1,0 +1,159 @@
+name: Mailer · Deploy · Staging
+
+# Apply infra/envs/staging (the mailer's own root), push a fresh image, point
+# all three mailer Lambdas (ingress/sender/feedback — one image, three
+# entrypoints) at it, smoke-test.
+#
+# In the insolvia repo this was two workflows (infra-staging.yml applied a root
+# that held every stack, then this one shipped code). Here the root holds the
+# mailer alone, so the apply and the deploy are one job — nothing else could
+# be mid-flight against this state.
+#
+# THE EMPTY-STATE GUARD. Before applying, the job checks that the state already
+# holds module.mailer. An apply onto EMPTY state would try to create a second
+# mailer next to the live one — colliding on every fixed name (tables, queues,
+# roles, the custom domain) and, worse, succeeding for the ones AWS treats as
+# idempotent. Empty state here means one of two things: a fresh account (pass
+# `bootstrap: true`), or the state migration from insolvia has not run yet
+# (docs/runbooks/state-migration.md) — which is exactly when this must refuse.
+#
+# A FRESH ACCOUNT still cannot go straight through this: an Image-package
+# Lambda refuses to be created before its image exists. Bootstrap once, per
+# modules/mailer/main.tf:
+#   1. shared applied (creates insolvia-shared-mailer)
+#   2. docker build --target lambda services/mailer, tag <repo-url>:staging, push
+#   3. dispatch this with bootstrap: true
+#
+# The insolvia repo's staging API must exist first — this root looks up its
+# execution role by name (infra/envs/staging/main.tf).
+
+on:
+  # release.yml calls this as its staging leg; dispatchable for a single
+  # out-of-band deploy.
+  workflow_call:
+    inputs:
+      bootstrap:
+        type: boolean
+        default: false
+        required: false
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: "Allow applying onto EMPTY state (fresh account only — see the header)"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+# release.yml declares NO group of its own: a group on both caller and callee
+# deadlocks, and `needs` already orders the legs.
+concurrency:
+  group: insolvia-services-terraform-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: insolvia-staging
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.10"
+          # The wrapper interposes on stdout, which corrupts the
+          # `terraform output -raw` / `-json` command substitutions below.
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform -chdir=infra/envs/staging init -input=false
+
+      - name: Refuse to apply onto empty state
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          if terraform -chdir=infra/envs/staging state list | grep -q '^module\.mailer\.'; then
+            echo "State holds module.mailer — applying."
+          elif [ "$BOOTSTRAP" = "true" ]; then
+            echo "::warning::Empty state and bootstrap=true — creating the mailer from scratch."
+          else
+            echo "::error::infra/envs/staging state holds no module.mailer. If the mailer is live, its state has not been migrated from insolvia yet (docs/runbooks/state-migration.md) — applying now would create a second one. For a genuinely fresh account, re-dispatch with bootstrap: true."
+            exit 1
+          fi
+
+      - name: Apply
+        run: terraform -chdir=infra/envs/staging apply -auto-approve -input=false
+
+      - name: Read outputs
+        id: tf
+        run: |
+          {
+            echo "repo=$(terraform -chdir=infra/envs/staging output -raw mailer_ecr_repository_url)"
+            echo "domain=$(terraform -chdir=infra/envs/staging output -raw mailer_api_url)"
+          } >> "$GITHUB_OUTPUT"
+          terraform -chdir=infra/envs/staging output -json mailer_lambda_function_names \
+            > mailer-functions.json
+
+      - name: Log in to ECR
+        env:
+          REPO: ${{ steps.tf.outputs.repo }}
+        run: |
+          # The registry host is everything before the first `/` of the repo URL.
+          aws ecr get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin "${REPO%%/*}"
+
+      - name: Build and push image
+        env:
+          REPO: ${{ steps.tf.outputs.repo }}
+        run: |
+          # `sha-<sha>` is the immutable build identity — the tag a production
+          # promotion resolves to a digest. `staging` is a MOVING marker tag
+          # meaning "the image this environment currently runs"; it is what a
+          # from-scratch apply seeds the Lambda from (var.image_tag). There is
+          # no `:latest`: the repository is shared with prod, where it would
+          # mean "whatever any environment pushed last".
+          #
+          # The `<sha>` is a commit of THIS repo. insolvia's commits no longer
+          # tag mailer images — its release pipeline stopped touching this
+          # repository when the mailer moved.
+          docker build --target lambda \
+            -t "$REPO:sha-${{ github.sha }}" \
+            -t "$REPO:staging" \
+            services/mailer
+          docker push "$REPO:sha-${{ github.sha }}"
+          docker push "$REPO:staging"
+
+      - name: Update Lambda code (ingress, sender, feedback)
+        env:
+          REPO: ${{ steps.tf.outputs.repo }}
+        run: |
+          for function in $(jq -r '.[]' mailer-functions.json); do
+            aws lambda update-function-code \
+              --function-name "$function" \
+              --image-uri "$REPO:sha-${{ github.sha }}"
+          done
+          for function in $(jq -r '.[]' mailer-functions.json); do
+            aws lambda wait function-updated --function-name "$function"
+          done
+
+      - name: Smoke test
+        env:
+          DOMAIN: ${{ steps.tf.outputs.domain }}
+        run: |
+          # The mailer API is SigV4-authenticated end to end — it has no
+          # unauthenticated route at all. An unsigned request should get exactly
+          # a 403 from API Gateway's IAM authorizer, which proves the custom
+          # domain, DNS, and Lambda are wired together.
+          status="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DOMAIN/v1/services/insolvia_api/messages")"
+          if [ "$status" != "403" ]; then
+            echo "expected 403 (Forbidden — unsigned request) from $DOMAIN, got $status" >&2
+            exit 1
+          fi

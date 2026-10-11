@@ -1,0 +1,175 @@
+name: Mailer · Deploy · Production
+
+# Apply infra/envs/prod (the mailer's own root), then PROMOTE — never rebuild —
+# the image staging validated: resolve this commit's `sha-<commit>` tag to an
+# immutable digest in the shared repository and point the three Lambdas at it.
+#
+# Two ways in:
+#   • release.yml's production stage calls this with `gated: true`, after its
+#     own `promote` job took the insolvia-production approval.
+#   • Dispatch by hand (emergency/out-of-band). `verified-commit` then refuses
+#     a commit without a successful insolvia-services/staging-release status,
+#     and the `approve` job asks for the production approval itself.
+#
+# Same empty-state guard as mailer-staging.yml, for the same reason.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to deploy (default: main HEAD). Must have deployed green to staging."
+        required: false
+        type: string
+      force:
+        description: "Skip the staging-green check (emergency only)"
+        required: false
+        default: false
+        type: boolean
+      bootstrap:
+        description: "Allow applying onto EMPTY state (fresh account only)"
+        required: false
+        default: false
+        type: boolean
+
+  workflow_call:
+    inputs:
+      sha:
+        required: false
+        type: string
+      force:
+        required: false
+        default: false
+        type: boolean
+      gated:
+        description: "The caller already holds this run's insolvia-production approval — do not ask for a second one."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+  statuses: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: commit
+        uses: ./.github/actions/verified-commit
+        with:
+          sha: ${{ inputs.sha }}
+          force: ${{ inputs.force }}
+
+  approve:
+    needs: resolve
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.gated != true }}
+    runs-on: ubuntu-latest
+    environment: insolvia-production
+    steps:
+      - run: echo "Production deploy of ${{ needs.resolve.outputs.sha }} approved."
+
+  deploy:
+    needs: [resolve, approve]
+    # `approve` is skipped on the gated (release.yml) path; that is fine.
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: insolvia-services-terraform-prod
+      cancel-in-progress: false
+    steps:
+      # The commit being promoted, not whatever main is now — the Terraform
+      # applied must be the Terraform staging validated alongside the image.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.10"
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform -chdir=infra/envs/prod init -input=false
+
+      - name: Refuse to apply onto empty state
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          if terraform -chdir=infra/envs/prod state list | grep -q '^module\.mailer\.'; then
+            echo "State holds module.mailer — applying."
+          elif [ "$BOOTSTRAP" = "true" ]; then
+            echo "::warning::Empty state and bootstrap=true — creating the mailer from scratch."
+          else
+            echo "::error::infra/envs/prod state holds no module.mailer. If the mailer is live, its state has not been migrated from insolvia yet (docs/runbooks/state-migration.md) — applying now would create a second one."
+            exit 1
+          fi
+
+      - name: Apply
+        run: terraform -chdir=infra/envs/prod apply -auto-approve -input=false
+
+      - name: Read outputs
+        id: tf
+        run: |
+          {
+            echo "repo=$(terraform -chdir=infra/envs/prod output -raw mailer_ecr_repository_url)"
+            echo "domain=$(terraform -chdir=infra/envs/prod output -raw mailer_api_url)"
+          } >> "$GITHUB_OUTPUT"
+          terraform -chdir=infra/envs/prod output -json mailer_lambda_function_names \
+            > mailer-functions.json
+
+      - id: image
+        uses: ./.github/actions/promote-image
+        with:
+          repository-url: ${{ steps.tf.outputs.repo }}
+          sha: ${{ needs.resolve.outputs.sha }}
+
+      - name: Update Lambda code (ingress, sender, feedback)
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image-uri }}
+        run: |
+          for function in $(jq -r '.[]' mailer-functions.json); do
+            aws lambda update-function-code \
+              --function-name "$function" \
+              --image-uri "$IMAGE_URI"
+          done
+          for function in $(jq -r '.[]' mailer-functions.json); do
+            aws lambda wait function-updated --function-name "$function"
+          done
+
+      - name: Move the prod marker tag
+        env:
+          REPO: ${{ steps.tf.outputs.repo }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          # `prod` means "the image production runs" — what a from-scratch
+          # apply seeds the Lambdas from. put-image fails when the tag already
+          # points at this digest, which is success.
+          manifest="$(aws ecr batch-get-image \
+            --repository-name "${REPO#*/}" \
+            --image-ids "imageDigest=$DIGEST" \
+            --query 'images[0].imageManifest' --output text)"
+          aws ecr put-image \
+            --repository-name "${REPO#*/}" \
+            --image-tag prod \
+            --image-manifest "$manifest" >/dev/null 2>&1 || \
+            echo "::notice::\`prod\` tag already points at this digest."
+
+      - name: Smoke test
+        env:
+          DOMAIN: ${{ steps.tf.outputs.domain }}
+        run: |
+          status="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DOMAIN/v1/services/insolvia_api/messages")"
+          if [ "$status" != "403" ]; then
+            echo "expected 403 (Forbidden — unsigned request) from $DOMAIN, got $status" >&2
+            exit 1
+          fi

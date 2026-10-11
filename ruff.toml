@@ -1,0 +1,39 @@
+# Shared ruff config for every Python service in this repo (today: the mailer).
+# Mirrors the `ruff check` / `ruff format --check` steps of mailer-pr.yml — the
+# same rules run locally (services/mailer/scripts/dev-test.sh) and in CI. It
+# is a copy of the insolvia repo's root ruff.toml as of the 2026-10-11 split;
+# the two are not linked, so a rule change in one does not reach the other.
+target-version = "py311"
+line-length = 88
+
+# Agent tooling is never ours to lint. A `ruff check .` run from a service
+# directory walks whatever sits beneath it, including a copy of agent tooling
+# (installed skills can ship Python of their own), and .gitignore does not
+# help there. So the exclusion is here, not as an explicit `src tests`
+# argument list in scripts/dev-test.sh: that script exists to run
+# byte-for-byte what the PR workflow's Lint step runs (`ruff check .`).
+#
+# No trailing slash and no directory separator, so these match a directory of
+# that name at ANY depth — which is the whole point.
+extend-exclude = [".agents", ".claude"]
+
+[lint]
+# Strict, curated rule set. Beyond the pyflakes/pycodestyle baseline this adds
+# import sorting, bug patterns, modern-syntax upgrades, simplifications,
+# comprehension and pytest style, ruff's own checks, and naming.
+select = [
+  "E", "W",   # pycodestyle errors + warnings
+  "F",        # pyflakes
+  "I",        # isort (import ordering)
+  "B",        # flake8-bugbear (likely bugs)
+  "UP",       # pyupgrade (modern syntax for the target version)
+  "SIM",      # flake8-simplify
+  "C4",       # flake8-comprehensions
+  "PT",       # flake8-pytest-style
+  "RUF",      # ruff-specific rules
+  "N",        # pep8-naming
+]
+
+[lint.per-file-ignores]
+# Tests may use assert-style and fixture patterns freely.
+"tests/**" = ["S101"]
