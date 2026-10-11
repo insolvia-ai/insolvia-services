@@ -1,7 +1,10 @@
 # Cutover: shared infra and the mailer leave the insolvia repo
 
-**Status: not yet executed.** When it has been, say so here (date, who, the
-backup directory names) rather than deleting the page.
+**Status: executed on 2026-10-11** — the `insolvia-services/staging` and
+`insolvia-services/prod` state objects exist from that day and both PRs have
+merged. *Who ran it and the backup directory names are still to be recorded
+here by the person who did.* Auth's later move follows the same pattern:
+[`auth-state-migration.md`](auth-state-migration.md).
 
 On 2026-10-11 the shared AWS infrastructure (`infra/envs/shared`, `ci-trust`,
 `account-access`) and the mailer were lifted out of
@@ -39,7 +42,10 @@ Three ways the move could go wrong, and what stops each one:
    refuse to apply unless the state already holds `module.mailer`, unless
    someone passes `bootstrap: true`, which is only for a fresh account.
 
-The move itself is [`scripts/migrate-mailer-state.sh`](../../scripts/migrate-mailer-state.sh).
+The move itself was `scripts/migrate-mailer-state.sh`, since generalised into
+[`scripts/migrate-module-state.sh`](../../scripts/migrate-module-state.sh)
+(`--module module.mailer`, no `--keep`) for auth's move — same backup,
+verification and restore behaviour.
 It is run by a human with admin credentials, not a workflow, for reasons its
 header gives. It backs up, moves, verifies with two plans, and **restores both
 states automatically** if either plan is wrong.
@@ -111,7 +117,7 @@ gh run cancel <id> -R insolvia-ai/insolvia
 ### 4. Move staging
 
 ```bash
-scripts/migrate-mailer-state.sh staging --insolvia-dir ../insolvia
+scripts/migrate-module-state.sh staging --module module.mailer --insolvia-dir ../insolvia
 ```
 
 It prints how many `module.mailer` resources it found, asks before moving,
@@ -126,7 +132,7 @@ as long as none is a destroy, and the script already refuses any destroy.
 ### 5. Move prod
 
 ```bash
-scripts/migrate-mailer-state.sh prod --insolvia-dir ../insolvia
+scripts/migrate-module-state.sh prod --module module.mailer --insolvia-dir ../insolvia
 ```
 
 The same check, with one difference you should expect. Prod trails insolvia's

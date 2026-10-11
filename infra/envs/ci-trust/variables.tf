@@ -54,10 +54,12 @@ variable "github_services_immutable_sub_prefix" {
   default     = "repo:insolvia-ai@305033818/insolvia-services@1414426760"
 }
 
-# The description below predates the 2026-10-11 split. Every path it names —
-# the staging root that owns the pool (run its `terraform output` from a
-# checkout of the INSOLVIA repo; this repo's infra/envs/staging is the
-# mailer's) and app-staging.yml — is the insolvia repo's.
+# The pool this names is THIS repo's since auth moved here (insolvia ADR 0026):
+# `terraform -chdir=infra/envs/staging output -raw auth_user_pool_arn` below
+# runs in this repo. The seed step that uses the grant (app-staging.yml,
+# .github/actions/seed-staging) is still the insolvia repo's — which is why the
+# seed role trusts insolvia alone. The move kept the pool, so the ARN in the
+# default did not change.
 variable "staging_user_pool_arn" {
   description = <<-EOT
     ARN of the STAGING Cognito user pool, so the seed role can provision the

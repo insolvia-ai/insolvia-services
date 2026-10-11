@@ -7,12 +7,15 @@ bootstrap: [`docs/runbooks/aws-bootstrap.md`](../docs/runbooks/aws-bootstrap.md)
 Applies touch AWS — read the `insolvia-aws-auth` skill first if credentials
 aren't working.
 
-- **Five roots, and only `shared`, `staging` and `prod` are CI-applied.**
-  `ci-trust` and `account-access` are human-applied by design (below).
-  `staging` and `prod` hold **the mailer and nothing else**; every app stack
-  for those environments is the insolvia repo's root of the same name, with
-  its own state key. There is **no `dev` root** here — insolvia owns
-  `infra/envs/dev`; the mailer's local loop is Docker + Mailpit.
+- **Six roots, and only `shared`, `staging` and `prod` are CI-applied.**
+  `ci-trust` and `account-access` are human-applied by design (below);
+  `dev` is per developer machine, applied only by `scripts/dev-aws-auth.sh`
+  with the developer's own credentials. `staging` and `prod` hold **the
+  mailer and auth** (`module.mailer`, `module.auth`); every app stack for
+  those environments is the insolvia repo's root of the same name, with its
+  own state key. `dev` holds **auth alone** — a developer's own pool, which
+  insolvia's `infra/envs/dev` looks up by name; the mailer still has no dev
+  root (its local loop is Docker + Mailpit).
 - **Terraform `>= 1.10`** (native S3 state locking via `use_lockfile`; no
   DynamoDB lock table), AWS provider `~> 6.37` in every root. The floor is the
   insolvia repo's, kept identical so both repos run one provider line against
@@ -86,17 +89,34 @@ aren't working.
   re-applies `ci-trust`.
 - **Never `terraform apply` staging or prod from the CLI.** Staging applies on
   merge to `main`, prod after the release's `promote` approval. The legitimate
-  local applies are the human-gated `ci-trust` and `account-access`, and the
-  one-off state move `scripts/migrate-mailer-state.sh` — only as
-  `docs/runbooks/state-migration.md` directs. See the `insolvia-deploy` skill.
+  local applies are the human-gated `ci-trust` and `account-access`, a
+  developer's own `dev` root, and the one-off state moves
+  `scripts/migrate-module-state.sh` — only as `docs/runbooks/state-migration.md`
+  (mailer) or `docs/runbooks/auth-state-migration.md` (auth) directs. See the
+  `insolvia-deploy` skill.
 - **The empty-state guard is load-bearing.** `mailer-staging.yml` and
-  `mailer-prod.yml` refuse to apply onto a state with no `module.mailer`;
-  `bootstrap: true` overrides it **for a fresh account only**. Never pass it
-  to "unstick" a deploy: if the mailer is live, empty state means the
-  migration has not run, and an apply creates a second mailer that collides
-  on every fixed name. Keep the mailer at the address `module.mailer` — the
-  state move depended on it, and a rename is a destroy-and-create unless a
-  `moved` block says otherwise.
+  `mailer-prod.yml` refuse to apply onto a state missing `module.mailer` or
+  `module.auth`; `bootstrap: true` overrides it **for a fresh account only**.
+  Never pass it to "unstick" a deploy: if the service is live, a missing
+  module means its migration has not run, and an apply creates a second
+  mailer (colliding on every fixed name) or a second user pool (Cognito
+  allows duplicate names — insolvia's lookup then refuses to plan). Keep both
+  at their addresses — the state moves depended on it, and a rename is a
+  destroy-and-create unless a `moved` block says otherwise.
+- **A user pool or app client is never destroyed or replaced by a release.**
+  The same two workflows refuse a plan that deletes or replaces either; only
+  a hand dispatch with `allow_auth_destroy: true` gets past, and that is for
+  retiring a client on purpose. A new pool mints new subjects (every account
+  gone, every row insolvia keys on a subject orphaned); a new client is a new
+  id every consumer verifies. Prod's pool also has deletion protection.
+  Several `aws_cognito_user_pool` arguments are ForceNew — read the plan.
+- **Auth's names are a contract with insolvia.** `modules/auth/main.tf`'s
+  header lists them; insolvia finds the pool and its clients by name. Pool
+  configuration — callback origins (staging's `http://localhost:3000` is one
+  half of a contract with insolvia's Expo dev server), custom domains, the SES
+  sender, deletion protection — is set here. The clients' managed-login
+  **branding** and the `AdminCreateUser` **grants** are insolvia's (ADR 0026),
+  so neither appears in this repo.
 - **Before a large or risky change, look at a real plan.** `infra-pr.yml`
   only validates offline (`init -backend=false`): it catches syntax and type
   errors but never shows what a change would *do*, and there is no plan-mode

@@ -165,7 +165,7 @@ applying.
 Apply `ci-trust` first, because `shared` — and everything after it, in both
 repos — is applied *as* the deploy role `ci-trust` creates. Leave
 `staging_user_pool_arn` empty on this first apply: the staging pool does not
-exist yet (step 10 comes back for it).
+exist yet (step 11 comes back for it).
 
 ```bash
 scripts/apply-ci-trust.sh
@@ -237,7 +237,36 @@ Idempotent in effect: a second run fails with `InvalidInput` naming the role
 as already taken, which is the confirmation. Only the Cognito service itself
 can assume it. *Done for account `521762924626` on 2026-08-10.*
 
-## 8. The app's environments **(insolvia)**
+## 8. Auth — the user pools, before anything of insolvia's
+
+insolvia's env roots find their user pool and app clients **by name** (its
+`modules/auth`), so they cannot plan until the pool exists. The pool is
+`module.auth` in this repo's `staging` and `prod` roots — but those roots also
+hold the mailer, which looks up insolvia's API role and fails the plan until
+step 9 has created it. Break the circle with a **targeted** first apply of
+auth alone, from a human admin's machine, once per environment. It is the one
+bootstrap-only exception to "staging and prod apply in CI", for the same
+reason `shared`'s first apply in step 4 was local:
+
+```bash
+terraform -chdir=infra/envs/staging init
+terraform -chdir=infra/envs/staging apply -target=module.auth   # the pool, its domains, the app clients
+terraform -chdir=infra/envs/prod init
+terraform -chdir=infra/envs/prod apply -target=module.auth
+```
+
+Read each plan: it should create one pool, the domain(s) and the clients,
+and nothing of the mailer's. Staging's custom domain (`staging-auth`) needs
+the apex to resolve, and Cognito takes 15–20 minutes to provision it. Until
+insolvia's prod marketing site is up (step 9), the apex has no A record, and
+this apply fails on that resource with "Was not able to resolve a DNS A record
+for the parent domain". If so, re-run it after step 9. Everything else will
+already exist.
+
+Step 7's service-linked role must exist first, because both pools send
+through SES.
+
+## 9. The app's environments **(insolvia)**
 
 In the insolvia checkout: seed the first images its Image-package Lambdas
 need (`scripts/bootstrap-ecr-images.sh <env> …` — the repositories already
@@ -246,9 +275,10 @@ Its `scripts/README.md` and `infra/README.md` own the detail. `prod` follows
 behind that repo's approval.
 
 The mailer comes next, and needs this first: its roots look up insolvia's
-`insolvia-<env>-api-role` and fail the plan until it exists.
+`insolvia-<env>-api-role` and fail the plan until it exists. From here on
+those roots plan whole, auth included, and their workflows apply them.
 
-## 9. The mailer's environments
+## 10. The mailer's environments
 
 Once per environment, staging first. The header of
 `.github/workflows/mailer-staging.yml` (and of `infra/modules/mailer/main.tf`)
@@ -271,11 +301,11 @@ insolvia's API already points at the mailer: its roots construct
 step. The mailer's invoke grant on insolvia's API role is created here, so
 sends start working once this apply lands.
 
-## 10. Close the loop on `ci-trust`
+## 11. Close the loop on `ci-trust`
 
-Now that insolvia's staging Cognito pool exists, set `staging_user_pool_arn`
-in `infra/envs/ci-trust/variables.tf` (read it from insolvia's staging root —
-the comment above the variable says how), merge, and run
+Now that the staging Cognito pool exists (step 8), set `staging_user_pool_arn`
+in `infra/envs/ci-trust/variables.tf` (`terraform -chdir=infra/envs/staging
+output -raw auth_user_pool_arn` in this repo), merge, and run
 `scripts/apply-ci-trust.sh` again. Until then the staging seed role holds no
 Cognito grant and insolvia's seed step fails with `AccessDenied`.
 
@@ -284,5 +314,6 @@ Cognito grant and insolvia's seed step fails with `AccessDenied`.
 1 (state bucket) → 2 (confirm no OIDC provider; check repo ids) → **3 (import
 the hosted zone)** → 4 (`ci-trust`, then `shared`) → 5 (secrets, environments,
 rulesets in both repos) → 6 (verify delegation + cert) → 7 (Cognito SLR) →
-8 (insolvia's environments) → 9 (the mailer's) → 10 (`ci-trust` again, with
-the staging pool).
+**8 (auth, targeted, here)** → 9 (insolvia's environments) → 10 (the
+mailer's, which also brings auth under its normal workflow) → 11 (`ci-trust`
+again, with the staging pool).

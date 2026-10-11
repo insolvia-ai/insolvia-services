@@ -1,22 +1,26 @@
-# Production mailer:
-#   • mailer API -> ${var.mailer_subdomain}
+# Production — the shared services this repo runs for the environment:
+#   • the mailer       -> ${var.mailer_subdomain}
+#   • auth (Cognito)   -> the pool, its hosted domain(s) and the app clients
 #
-# The mailer is the only stack this root owns. The app's stacks for this
-# environment (web hosting, API, auth, case stores, …) are the insolvia repo's
-# infra/envs/prod — a separate root with its own state. This root reaches
-# across to it in exactly two places, both BY NAME, never by remote state
+# The app's stacks for this environment (web hosting, API, case stores, …) are
+# the insolvia repo's infra/envs/prod — a separate root with its own state.
+# The two reach each other BY NAME, never by remote state
 # (docs/reference/terraform.md: cross-layer references are data sources):
 #
-#   1. The API Lambda's execution role (data.aws_iam_role.api below) — the
-#      mailer's one registered caller. If insolvia has not applied this
-#      environment yet, the lookup fails the plan outright, which is the
-#      honest answer: there is no caller to allow.
+#   1. The mailer looks up insolvia's API Lambda execution role
+#      (data.aws_iam_role.api below) — its one registered caller. If insolvia
+#      has not applied this environment yet, that lookup fails the plan
+#      outright, which is the honest answer: there is no caller to allow.
 #   2. The mailer URL travels the other way WITHOUT a reference: insolvia's
-#      root constructs it from the same hostname and writes it into the API's
-#      SSM namespace itself.
+#      root constructs it from the same hostname.
+#   3. insolvia finds the user pool and its app clients by NAME (its
+#      modules/auth) — this root never learns anything of insolvia's for auth.
+#      The names are the contract; modules/auth/main.tf lists them.
 #
 # Shared resources (zone, wildcard cert, the mailer's container repository)
 # come from infra/envs/shared, in this repo, also by name.
+
+data "aws_caller_identity" "current" {}
 
 locals {
   environment = "prod"
@@ -25,6 +29,11 @@ locals {
     Environment = local.environment
     ManagedBy   = "terraform"
   }
+
+  # The account's SES domain identity (infra/envs/shared's email module),
+  # CONSTRUCTED rather than read from remote state — the same ARN modules/mailer
+  # builds. The pool sends invites and reset codes through it (#210).
+  ses_identity_arn = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
 }
 
 data "aws_route53_zone" "main" {
@@ -83,4 +92,49 @@ module "mailer" {
   ecr_repository_url         = data.aws_ecr_repository.mailer.repository_url
   image_tag                  = local.environment
   tags                       = local.common_tags
+}
+
+# ── Auth (Cognito) ──────────────────────────────────────────────
+# Insolvia's identity service for production, moved from the insolvia repo's
+# root of the same name on 2026-10-11 (insolvia ADR 0026). Its address is
+# module.auth, exactly as it was there, so the state moved and nothing was
+# recreated (docs/runbooks/auth-state-migration.md). Every input below is the
+# value insolvia passed, unchanged.
+#
+# Production registers ONLY the real app origin — no localhost dev callbacks
+# (those live on staging), so nothing running on a laptop can complete a prod
+# sign-in.
+module "auth" {
+  source = "../../modules/auth"
+
+  project     = "insolvia"
+  environment = local.environment
+
+  web_origins = ["https://${var.app_subdomain}"]
+
+  # No custom auth domain YET. It is staged behind staging on purpose —
+  # staging-auth.insolvia.ai proves the module against a real pool first, and
+  # the prod apply is 15-20 minutes of Cognito provisioning its own CloudFront
+  # distribution. Enable by setting these, once staging's has been seen working:
+  #
+  #   custom_domain   = "auth.${var.domain_name}"
+  #   certificate_arn = data.aws_acm_certificate.wildcard.arn
+  #   hosted_zone_id  = data.aws_route53_zone.main.zone_id
+  #
+  # insolvia's app picks the new hostname up by itself: its auth_domain output
+  # prefers the pool's custom domain wherever one exists.
+
+  # THE POINT OF THE VARIABLE. This pool holds the real attorney accounts;
+  # deleting it deletes every one of them, and with them every subject
+  # insolvia keys a row on. A destroy has to be two applies: flip this off,
+  # then destroy, with a plan diff at each step.
+  deletion_protection = true
+
+  # Branded sender ON, ahead of SES production access (#211) — chosen, not
+  # discovered: recipients on the verified domain deliver; onboarding a REAL
+  # firm before #211 lands would mean their invite silently never arrives,
+  # which is why #211 is a hard prerequisite on the provisioning checklist.
+  ses_source_arn = local.ses_identity_arn
+
+  tags = local.common_tags
 }

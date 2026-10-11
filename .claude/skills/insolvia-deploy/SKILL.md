@@ -104,15 +104,21 @@ All three are human-run, each through its own guarded script:
   here too.
 - **`account-access`** — `scripts/apply-account-access.sh`, when the people
   change. CI holds no IAM user/group permissions at all.
-- **The 2026-10-11 state move** — `scripts/migrate-mailer-state.sh`, once per
-  environment, only inside
+- **The state moves out of insolvia** — `scripts/migrate-module-state.sh`,
+  once per environment, only inside
   [`docs/runbooks/state-migration.md`](../../../docs/runbooks/state-migration.md)
-  (which freezes insolvia's release pipeline around it). It moves state; it
-  creates and destroys nothing.
+  (the mailer) or
+  [`docs/runbooks/auth-state-migration.md`](../../../docs/runbooks/auth-state-migration.md)
+  (auth), which freeze the release pipelines around them. They move state;
+  they create and destroy nothing. `--rehearse` is read-only and always fine.
+- **A developer's own Cognito pool** — `infra/envs/dev`, per machine, applied
+  by `scripts/dev-aws-auth.sh` (normally run by insolvia's
+  `scripts/dev-aws-setup.sh`). Never CI, never shared.
 
-There is no per-developer AWS environment here — the mailer's local loop is
-Docker + Mailpit (`services/mailer/scripts/dev-up.sh`). The per-machine
-`infra/envs/dev` and its `scripts/dev-aws-*` are the insolvia repo's.
+The mailer still has no per-developer AWS environment — its local loop is
+Docker + Mailpit (`services/mailer/scripts/dev-up.sh`). The rest of the
+per-machine stack (`infra/envs/dev`, `scripts/dev-aws-*`) is the insolvia
+repo's.
 
 Everything else is a merge, an approval, or a dispatch — never a hand-run
 apply.

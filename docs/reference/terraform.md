@@ -50,10 +50,17 @@ insolvia repo's environment roots also stayed at `insolvia/{staging,prod}/…`
 and `insolvia/dev/<account-id>/<machine-id>/…` — those keys hold the app's
 stacks. This repo's environment roots are new and sit under
 `insolvia-services/…`; the live mailer was moved into them, address for
-address, by [`state-migration.md`](../runbooks/state-migration.md).
+address, by [`state-migration.md`](../runbooks/state-migration.md), and auth
+(the Cognito pools and their app clients) by
+[`auth-state-migration.md`](../runbooks/auth-state-migration.md).
 
-There is no `dev` root here. The mailer's local loop is Docker + Mailpit
-(`services/mailer/scripts/dev-up.sh`) and needs no AWS at all.
+**`dev` is per developer machine and holds auth alone** — that machine's
+Cognito pool, at `insolvia-services/dev/<account-id>/<machine-id>/…`, applied
+by `scripts/dev-aws-auth.sh` (insolvia's `scripts/dev-aws-setup.sh` runs it
+before its own dev root, which looks the pool up by name). The machine
+identity is insolvia's: `~/.config/insolvia/machine-id`. Auth has a dev root
+and the mailer does not because the mailer has a local stand-in (Docker +
+Mailpit, `services/mailer/scripts/dev-up.sh`) and Cognito has none.
 
 ## References across layers and across repos — by name, never by state
 
@@ -77,7 +84,7 @@ data "aws_ecr_repository" "mailer" {
 ```
 
 That rule predates the split and is what made the split cheap: the boundary
-between the repos was already a set of names. Three cross it:
+between the repos was already a set of names. Four cross it:
 
 - **`shared` → everyone.** This repo's mailer roots and the insolvia repo's
   env roots look up the zone, the cert and their container repositories.
@@ -96,6 +103,18 @@ between the repos was already a set of names. Three cross it:
   write the mailer's URL into the API's SSM namespace, *constructed* from the
   same hostname this repo's `mailer_subdomain` serves. A hostname change is
   therefore a change in both repos.
+- **Auth → insolvia.** insolvia's `modules/auth` looks up
+  `insolvia-<env>-users` (`data "aws_cognito_user_pools"`, which must find
+  exactly one) and its clients by name (`data "aws_cognito_user_pool_clients"`:
+  `-app`, `-portal`, every `-mcp-<harness>`). It turns them into the same
+  outputs, SSM parameters and `auth_*` env outputs it had when it owned the
+  pool. It also owns the two things that are the consumer's: the clients'
+  managed-login **branding**, generated from its brand, and the
+  `AdminCreateUser` **grants** on its own roles. That is why this repo never
+  needs an insolvia role name for auth, and why a fresh account's only
+  cycle is the mailer's (`aws-bootstrap.md` § 8). The pool configuration and
+  the names themselves are this repo's: `modules/auth/main.tf` lists the
+  contract.
 
 Root [`CLAUDE.md`](../../CLAUDE.md#two-repositories) states the ordering each
 of these imposes.

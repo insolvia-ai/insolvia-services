@@ -19,10 +19,20 @@ variable "mailer_subdomain" {
 }
 
 # The app's host in this environment — the mailer's content bucket allows
-# browser uploads from it (CORS). It is the insolvia repo's web_hosting
-# domain; this repo only names it.
+# browser uploads from it (CORS), and the auth module registers it as the web
+# and portal clients' redirect origin. It is the insolvia repo's web_hosting
+# domain; this repo only names it, so changing it is a two-repo change.
 variable "app_subdomain" {
-  description = "Hostname of the Insolvia web app in this environment (CORS origin)."
+  description = "Hostname of the Insolvia web app in this environment (CORS origin, OAuth redirect origin)."
   type        = string
   default     = "staging-app.insolvia.ai"
+}
+
+# The custom sign-in hostname. Flat label for the wildcard cert's reason above
+# (staging-auth, not auth.staging). insolvia's app reads it back through the
+# pool (its auth_domain output), never from this default.
+variable "auth_subdomain" {
+  description = "Custom hostname the Cognito managed login serves in this environment."
+  type        = string
+  default     = "staging-auth.insolvia.ai"
 }

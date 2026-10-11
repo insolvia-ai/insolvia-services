@@ -1,7 +1,8 @@
 # insolvia-services
 
-Insolvia's account-wide AWS infrastructure, and the mailer — the
-transactional-email service the Insolvia app's API sends through.
+Insolvia's account-wide AWS infrastructure, the mailer — the
+transactional-email service the Insolvia app's API sends through — and auth,
+the Cognito user pools the app signs people in with.
 
 This repository was cut from
 [insolvia-ai/insolvia](https://github.com/insolvia-ai/insolvia) on
@@ -17,6 +18,7 @@ This repository was cut from
 | `infra/envs/ci-trust` — the GitHub OIDC provider and the one deploy role both repos use | The app's backend: `services/api`, `admin`, `mcp`, `filing`, `insolvia_core` |
 | `infra/envs/account-access` — the human IAM users and groups | Every app stack: `infra/envs/dev`, `staging`, `prod` |
 | `services/mailer`, and its staging/prod stacks in `infra/envs/staging` and `infra/envs/prod` | Decision records (`docs/adr/`), the product plan, seeds and fixtures |
+| `infra/modules/auth` — the Cognito user pools, hosted domains and app clients, in `staging`, `prod` and a per-machine `dev` root ([ADR 0026](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0026-auth-is-a-shared-service.md)) | The sign-in page's branding and the API's invite grants (insolvia's `modules/auth`, which finds the pool by name) |
 
 The two repos deploy into one AWS account and find each other's resources by
 name — never by reading each other's Terraform state. The rules that follow
@@ -26,7 +28,7 @@ from that are in [`CLAUDE.md`](CLAUDE.md#two-repositories).
 
 ```
 services/mailer/   the mailer (Python on Lambda; Mailpit locally)
-infra/             Terraform — five roots, three modules; see infra/README.md
+infra/             Terraform — six roots, four modules; see infra/README.md
 .github/           CI: PR gates, the release pipeline, shared actions
 scripts/           toolchain setup and the human-run Terraform applies
 docs/              reference and runbooks; see docs/README.md
