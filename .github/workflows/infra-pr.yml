@@ -16,8 +16,9 @@ permissions:
 jobs:
   terraform-validate:
     # Matrixed, so this reports one check per root — "Terraform validate
-    # (shared)", "(staging)", "(prod)", "(ci-trust)", "(account-access)". All
-    # five are required by name on protect-main (scripts/update-ruleset.sh).
+    # (shared)", "(staging)", "(prod)", "(dev)", "(ci-trust)",
+    # "(account-access)". All but (dev) are required by name on protect-main
+    # (scripts/update-ruleset.sh); add (dev) there once this has merged.
     name: Terraform validate
     runs-on: ubuntu-latest
     strategy:
@@ -34,10 +35,10 @@ jobs:
         # checks ARE required — a broken trust anchor is found at review, not
         # at the next human apply.
         #
-        # There is no `dev` here: the mailer runs locally under Docker
-        # (services/mailer/scripts/dev-up.sh, Mailpit), and no developer
-        # deploys it into AWS. insolvia's infra/envs/dev is that repo's.
-        env: [shared, staging, prod, ci-trust, account-access]
+        # `dev` is the per-machine auth root (a developer's own Cognito pool,
+        # applied by scripts/dev-aws-auth.sh — never by CI). Validated like
+        # the rest; the mailer still has no dev root (Docker + Mailpit).
+        env: [shared, staging, prod, dev, ci-trust, account-access]
     steps:
       - uses: actions/checkout@v5
         with:

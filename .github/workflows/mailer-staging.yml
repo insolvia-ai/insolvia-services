@@ -9,13 +9,22 @@ name: Mailer · Deploy · Staging
 # mailer alone, so the apply and the deploy are one job — nothing else could
 # be mid-flight against this state.
 #
-# THE EMPTY-STATE GUARD. Before applying, the job checks that the state already
-# holds module.mailer. An apply onto EMPTY state would try to create a second
-# mailer next to the live one — colliding on every fixed name (tables, queues,
-# roles, the custom domain) and, worse, succeeding for the ones AWS treats as
-# idempotent. Empty state here means one of two things: a fresh account (pass
-# `bootstrap: true`), or the state migration from insolvia has not run yet
-# (docs/runbooks/state-migration.md) — which is exactly when this must refuse.
+# THE ROOT HOLDS TWO MODULES since 2026-10-11 — the mailer and auth (the
+# Cognito pool and its app clients, insolvia ADR 0026) — so an apply here
+# changes both, and a pure auth change rebuilds and redeploys the mailer image
+# too. That is wasted minutes, not risk; the workflow keeps its name.
+#
+# TWO GUARDS run between plan and apply:
+#   • THE EMPTY-STATE GUARD: the state must already hold module.mailer AND
+#     module.auth. An apply onto a state missing one would create a second
+#     copy next to the live one — for the mailer, colliding on every fixed
+#     name; for auth, a second pool of the same name (Cognito allows it), which
+#     breaks insolvia's by-name lookup. A missing module means a fresh account
+#     (pass `bootstrap: true`) or a state move from insolvia that has not run
+#     (docs/runbooks/state-migration.md, docs/runbooks/auth-state-migration.md)
+#     — which is exactly when this must refuse.
+#   • NO POOL OR CLIENT IS DESTROYED OR REPLACED unless a human dispatches with
+#     `allow_auth_destroy: true`. A release never can.
 #
 # A FRESH ACCOUNT still cannot go straight through this: an Image-package
 # Lambda refuses to be created before its image exists. Bootstrap once, per
@@ -24,8 +33,10 @@ name: Mailer · Deploy · Staging
 #   2. docker build --target lambda services/mailer, tag <repo-url>:staging, push
 #   3. dispatch this with bootstrap: true
 #
-# The insolvia repo's staging API must exist first — this root looks up its
-# execution role by name (infra/envs/staging/main.tf).
+# The insolvia repo's staging API must exist first — the mailer looks up its
+# execution role by name — while insolvia's staging root needs THIS root's
+# user pool to plan. A fresh account breaks the circle with a targeted first
+# apply of module.auth; docs/runbooks/aws-bootstrap.md has the order.
 
 on:
   # release.yml calls this as its staging leg; dispatchable for a single
@@ -36,10 +47,19 @@ on:
         type: boolean
         default: false
         required: false
+      allow_auth_destroy:
+        type: boolean
+        default: false
+        required: false
   workflow_dispatch:
     inputs:
       bootstrap:
-        description: "Allow applying onto EMPTY state (fresh account only — see the header)"
+        description: "Allow applying onto a state missing a module (fresh account only — see the header)"
+        type: boolean
+        default: false
+        required: false
+      allow_auth_destroy:
+        description: "Allow a plan that destroys or replaces a Cognito user pool or app client (deliberate removals only)"
         type: boolean
         default: false
         required: false
@@ -76,21 +96,71 @@ jobs:
       - name: Init
         run: terraform -chdir=infra/envs/staging init -input=false
 
-      - name: Refuse to apply onto empty state
+      # One check per module this root owns. A module missing from the state
+      # means one of two things: a fresh account (bootstrap: true), or that
+      # module's state has not been moved over from insolvia yet — the mailer
+      # by docs/runbooks/state-migration.md, auth by
+      # docs/runbooks/auth-state-migration.md. Applying then would create a
+      # SECOND mailer (colliding on every fixed name) or a second user pool
+      # (Cognito does not make pool names unique, so that one would succeed
+      # and leave insolvia's by-name lookup ambiguous).
+      - name: Refuse to apply onto a state missing a module
         env:
           BOOTSTRAP: ${{ inputs.bootstrap }}
         run: |
-          if terraform -chdir=infra/envs/staging state list | grep -q '^module\.mailer\.'; then
-            echo "State holds module.mailer — applying."
+          listing="$(terraform -chdir=infra/envs/staging state list 2>/dev/null || true)"
+          missing=""
+          for module in mailer auth; do
+            if printf '%s\n' "$listing" | grep -q "^module\.$module\."; then
+              echo "State holds module.$module."
+            else
+              missing="$missing module.$module"
+            fi
+          done
+          if [ -z "$missing" ]; then
+            echo "Every module is in state — applying."
           elif [ "$BOOTSTRAP" = "true" ]; then
-            echo "::warning::Empty state and bootstrap=true — creating the mailer from scratch."
+            echo "::warning::State lacks$missing and bootstrap=true — creating from scratch."
           else
-            echo "::error::infra/envs/staging state holds no module.mailer. If the mailer is live, its state has not been migrated from insolvia yet (docs/runbooks/state-migration.md) — applying now would create a second one. For a genuinely fresh account, re-dispatch with bootstrap: true."
+            echo "::error::infra/envs/staging state holds no$missing. If it is live, its state has not been migrated from insolvia yet (docs/runbooks/state-migration.md for the mailer, docs/runbooks/auth-state-migration.md for auth) — applying now would create a second one. For a genuinely fresh account, re-dispatch with bootstrap: true."
+            exit 1
+          fi
+
+      - name: Plan
+        run: terraform -chdir=infra/envs/staging plan -input=false -out=tfplan
+
+      # The user pool and its app clients are the one thing here whose loss
+      # is not recoverable by re-applying: a new pool mints new subjects (every
+      # account gone, every row insolvia keys on a subject orphaned), and a new
+      # client is a new id every consumer verifies against. Prod's pool has
+      # deletion protection; staging's does not, and neither do clients. So a
+      # plan that destroys or replaces either stops here, before apply, rather
+      # than relying on a reviewer to have read it. Removing a client on
+      # purpose (retiring a harness) is a human decision made in this
+      # workflow's dispatch form, never in a release.
+      - name: Refuse to destroy or replace a user pool or app client
+        env:
+          ALLOW: ${{ inputs.allow_auth_destroy }}
+        run: |
+          hits="$(terraform -chdir=infra/envs/staging show -json tfplan | jq -r '
+            [.resource_changes[]?
+             | select(.type == "aws_cognito_user_pool" or .type == "aws_cognito_user_pool_client")
+             | select(.change.actions | index("delete"))
+             | "\(.change.actions | join("+"))  \(.address)"] | .[]')"
+          if [ -z "$hits" ]; then
+            echo "No user pool or app client is destroyed or replaced."
+          elif [ "$ALLOW" = "true" ]; then
+            echo "::warning::allow_auth_destroy=true — proceeding with:"
+            printf '%s\n' "$hits"
+          else
+            echo "::error::This plan destroys or replaces a Cognito user pool or app client:"
+            printf '%s\n' "$hits"
+            echo "::error::Refusing to apply. If (and only if) that is intended, dispatch this workflow by hand with allow_auth_destroy: true."
             exit 1
           fi
 
       - name: Apply
-        run: terraform -chdir=infra/envs/staging apply -auto-approve -input=false
+        run: terraform -chdir=infra/envs/staging apply -input=false tfplan
 
       - name: Read outputs
         id: tf

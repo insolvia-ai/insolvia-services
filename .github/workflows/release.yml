@@ -2,7 +2,7 @@ name: Release
 
 # The whole path to production for this repo, one run per merge to `main`:
 #
-#   changes → shared → staging (mailer) → record → promote (approval) → prod (mailer)
+#   changes → shared → staging (mailer + auth) → record → promote (approval) → prod (mailer + auth)
 #
 # The same shape as the insolvia repo's release.yml, which this one was cut
 # from on 2026-10-11, minus every leg that stayed behind. Two pipelines now
@@ -19,6 +19,11 @@ name: Release
 #     role by name) and insolvia's API reads the mailer's hostname from its own
 #     variables. Neither repo waits on the other at deploy time; the only hard
 #     ordering is a fresh account, covered in docs/runbooks/aws-bootstrap.md.
+#
+#   • insolvia finds the user pool and its app clients BY NAME (auth moved here
+#     on 2026-10-11, insolvia ADR 0026). A merge here that adds a client
+#     insolvia must read (a new MCP harness, say) must release before the
+#     insolvia PR that reads it — insolvia's plan fails until it exists.
 #
 # The prod stage PROMOTES — it never rebuilds. `record` guarantees the mailer
 # has a `sha-<commit>` tag at every staging-green commit, including ones that
@@ -106,7 +111,9 @@ jobs:
             fi
           }
 
-          emit mailer '^(services/mailer/|infra/envs/(staging|prod)/|infra/modules/mailer/|\.github/(workflows/(mailer-staging|release)\.yml|scripts/release-diff-base\.sh))'
+          # `mailer` is the staging/prod ROOT's leg, which since auth moved in
+          # (insolvia ADR 0026) applies module.auth as well — hence modules/auth.
+          emit mailer '^(services/mailer/|infra/envs/(staging|prod)/|infra/modules/(mailer|auth)/|\.github/(workflows/(mailer-staging|mailer-prod|release)\.yml|scripts/release-diff-base\.sh))'
           emit shared '^(infra/envs/shared/|infra/modules/(email|dev_fixtures)/|\.github/workflows/(shared-infra-deploy|release)\.yml)'
 
   shared:

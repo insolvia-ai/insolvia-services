@@ -55,3 +55,44 @@ output "mailer_alarms_topic_arn" {
   description = "SNS topic for Staging mailer alarms — subscribe by hand (Terraform manages no subscriptions)."
   value       = module.mailer.alarms_topic_arn
 }
+
+# ── Auth ────────────────────────────────────────────────────────
+# For humans and for this repo's own tooling — NOT for insolvia, which looks
+# the same values up by name (its modules/auth) and keeps auth_* outputs of
+# the same names for its deploy workflows. The pool ARN is what ci-trust's
+# staging seed role is scoped to (infra/envs/ci-trust/variables.tf).
+
+output "auth_user_pool_id" {
+  description = "Staging Cognito user pool ID."
+  value       = module.auth.user_pool_id
+}
+
+output "auth_user_pool_arn" {
+  description = "Staging Cognito user pool ARN."
+  value       = module.auth.user_pool_arn
+}
+
+output "auth_web_client_id" {
+  description = "Staging web SPA app client ID (insolvia-<env>-app)."
+  value       = module.auth.web_client_id
+}
+
+output "auth_portal_client_id" {
+  description = "Staging client portal app client ID (insolvia-<env>-portal)."
+  value       = module.auth.portal_client_id
+}
+
+output "auth_domain" {
+  description = "Staging sign-in hostname — the custom domain where configured, otherwise the Cognito prefix domain."
+  value       = module.auth.domain
+}
+
+output "auth_issuer_url" {
+  description = "Staging OIDC issuer URL tokens are verified against."
+  value       = module.auth.issuer_url
+}
+
+output "auth_mcp_client_ids_by_harness" {
+  description = "Staging MCP harness app client IDs, keyed by harness."
+  value       = module.auth.mcp_client_ids_by_harness
+}
