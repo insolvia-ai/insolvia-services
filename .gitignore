@@ -1,0 +1,67 @@
+# ── Terraform ───────────────────────────────────────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+# Real vars are secret; *.tfvars.example IS committed. (The comment sits on its
+# own line on purpose: gitignore has no trailing comments, so a `#` after a
+# pattern becomes part of the pattern and the rule silently matches nothing.)
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# .terraform.lock.hcl IS committed — one per root under infra/envs/, so every
+# checkout and CI run installs the same provider build (infra/CLAUDE.md owns
+# the upgrade procedure). Module-level locks are different: running init in a
+# module dir writes one, but only the env roots' locks are the record — the
+# module copies are noise.
+infra/modules/*/.terraform.lock.hcl
+.terraformrc
+terraform.rc
+# Lambda zips built by archive_file at plan time.
+infra/modules/*/.build/
+
+# ── Environment files ───────────────────────────────────────────
+# Nothing in this repo reads one today — the mailer's local stack is
+# configured entirely in its docker-compose.yml and needs no AWS credentials.
+# The rule exists so the first `.env` anybody adds is ignored before it can be
+# committed: this repository is public.
+.env
+.env.*
+!.env.example
+
+# ── Python ──────────────────────────────────────────────────────
+# services/mailer/.venv (created by services/mailer/scripts/dev-setup.sh) is
+# matched by `.venv/` at any depth, as are the tool caches beside it.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+coverage/
+.coverage
+
+# ── Editors / OS ────────────────────────────────────────────────
+*.iml
+*.ipr
+*.iws
+.idea/
+.vscode/
+*.log
+*.swp
+*~
+.DS_Store
+
+# ── Agent tooling ───────────────────────────────────────────────
+# Worktrees an agent harness creates inside the checkout, and per-machine
+# settings. `.claude/skills/` and `.claude/hooks/` stay tracked — they are this
+# repo's own.
+.claude/worktrees/
+.claude/settings.local.json
