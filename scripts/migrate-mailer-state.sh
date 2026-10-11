@@ -180,14 +180,39 @@ if [[ $code != 0 ]]; then
   die "insolvia-services/$ENV plan failed (exit $code) — restored."
 fi
 terraform -chdir="$NEW_DIR" show -json "$WORK/new.tfplan" > "$WORK/new-plan.json"
-changes="$(jq -r '[.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])
+# A create, delete or replace means the move did not land the way it should
+# (a resource missed, an address that does not line up) — always refused.
+bad="$(jq -r '[.resource_changes[]?
+  | select((.change.actions | index("create")) or (.change.actions | index("delete")))
   | "\(.change.actions | join("+"))  \(.address)"] | .[]' "$WORK/new-plan.json")"
-if [[ -n "$changes" ]]; then
-  printf '%s\n' "$changes" >&2
+if [[ -n "$bad" ]]; then
+  printf '%s\n' "$bad" >&2
   restore
-  die "insolvia-services/$ENV would change resources after the move — restored."
+  die "insolvia-services/$ENV would create, destroy or replace resources after the move — restored."
 fi
-ok "insolvia-services/$ENV: no resource changes (outputs are added by the first CI apply)"
+# IN-PLACE UPDATES are a different matter: they are code on insolvia's main
+# that this environment has not applied yet. Prod lags main until a release is
+# approved, so a prod move can legitimately see them (the first prod move did:
+# #405's `client_invitation` category in the Lambdas' registry JSON, merged
+# but never promoted). They would have applied on insolvia's next promotion;
+# now they apply on this repo's. Shown, and kept only on a human's yes.
+updates="$(jq -r '[.resource_changes[]? | select(.change.actions == ["update"])
+  | "update  \(.address)"] | .[]' "$WORK/new-plan.json")"
+if [[ -n "$updates" ]]; then
+  warn "insolvia-services/$ENV plans IN-PLACE UPDATES after the move — no create, destroy or replace:"
+  printf '%s\n' "$updates" | sed 's/^/    /' >&2
+  warn "These are changes on insolvia's main that $ENV has not applied yet, not caused by the"
+  warn "move. The full diff: terraform -chdir=$NEW_DIR show $WORK/new.tfplan (in another"
+  warn "terminal, before answering). They apply on this repo's next $ENV release."
+  read -r -p "Keep the move with these pending updates? [y/N] " reply
+  if [[ "$reply" != [yY] ]]; then
+    restore
+    die "declined — restored."
+  fi
+  ok "insolvia-services/$ENV: only the in-place updates above (outputs are added by the first CI apply)"
+else
+  ok "insolvia-services/$ENV: no resource changes (outputs are added by the first CI apply)"
+fi
 
 log "plan insolvia/$ENV (the removal PR's code) — must not touch the mailer or destroy anything"
 set +e

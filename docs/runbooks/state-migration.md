@@ -129,8 +129,13 @@ as long as none is a destroy, and the script already refuses any destroy.
 scripts/migrate-mailer-state.sh prod --insolvia-dir ../insolvia
 ```
 
-The same check. Prod is more likely to show other pending changes, because prod
-trails `main` until a release is approved.
+The same check, with one difference you should expect. Prod trails insolvia's
+`main` until a release is approved, so the **new** root can plan **in-place
+updates** that are not caused by the move: code merged on `main` that prod never
+applied. The first attempt found three: the mailer Lambdas' registry JSON gaining
+`client_invitation`, from #405. The script lists such updates and asks before
+keeping the move; read the diff it points to, then answer. A create, destroy or
+replace is still refused and restored automatically.
 
 ### 6. Required checks on insolvia
 
