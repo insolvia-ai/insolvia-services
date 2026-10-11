@@ -8,6 +8,7 @@ from insolvia_mailer.adapters.memory.auth import RegisteredServiceAuthorizer
 from insolvia_mailer.adapters.memory.config import load_service_registry
 from insolvia_mailer.adapters.memory.store import MemoryStore
 from insolvia_mailer.adapters.memory.worker import MemoryDeliveryWorker
+from insolvia_mailer.adapters.recipient_policy import load_recipient_policy
 from insolvia_mailer.api.app_factory import create_app
 from insolvia_mailer.api.dependencies import ApiDependencies
 
@@ -16,12 +17,14 @@ if os.environ.get("MAILER_RUNTIME", "").lower() != "development":
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 store = MemoryStore()
+recipient_policy = load_recipient_policy()
 app = create_app(
     ApiDependencies(
         services=load_service_registry(),
         store=store,
         authorizer=RegisteredServiceAuthorizer(),
         attachment_receiver=store,
+        recipient_policy=recipient_policy,
     )
 )
-MemoryDeliveryWorker(store, MailpitTransport()).start()
+MemoryDeliveryWorker(store, MailpitTransport(), recipient_policy).start()

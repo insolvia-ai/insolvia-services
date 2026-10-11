@@ -72,6 +72,36 @@ rejected request costs days and a second rejection is materially harder.
 | 6 | **DKIM, SPF, DMARC** aligned | `infra/modules/email` | `dig` checks in [`email.md § Verifying`](../reference/email.md#verifying) |
 | 7 | A **verified domain identity** | `infra/envs/shared` | `aws ses get-identity-verification-attributes --identities insolvia.ai` |
 
+### The staging recipient allowlist — the guard the sandbox was being
+
+Today the sandbox is the only thing stopping **staging** from emailing a real
+person: seed users, e2e accounts and hand-entered clients all have addresses,
+and the sandbox rejects every one that is not `@insolvia.ai`. Production
+access lifts that for the whole account — staging included, because both
+environments share one account and one SES identity.
+
+So, before submitting, confirm the mailer's per-environment recipient
+allowlist is live in staging ([`services/mailer/README.md` §
+Recipient allowlist](../../services/mailer/README.md#recipient-allowlist--who-an-environment-may-mail-at-all)):
+
+```bash
+aws lambda get-function-configuration --function-name insolvia-staging-mailer-ingress \
+  --query 'Environment.Variables.MAILER_RECIPIENT_POLICY_JSON' --output text
+# {"addresses":[],"domains":["insolvia.ai"],"mode":"allowlist"}
+```
+
+and that a staging send to a non-`insolvia.ai` address comes back
+`422 RecipientNotAllowed` rather than `202`. The same check against
+`insolvia-staging-mailer-sender` should print the same value.
+
+**It does not cover Cognito's own mail.** Cognito's invitation (with the
+temporary password) and its reset codes are sent by Cognito straight through
+SES, never through the mailer — so after production access, staging Cognito
+can mail any address a test user is created with. Close that before or
+alongside the request; see the insolvia repo for the options (a Cognito
+custom email sender Lambda routing through the mailer, or an SES-level
+restriction on staging's sending path).
+
 ### Two prerequisites that are NOT yet true
 
 Both are deliberate decisions, not oversights, and both must be resolved

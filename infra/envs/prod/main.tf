@@ -71,6 +71,9 @@ data "aws_iam_role" "api" {
 # monthly cost with nothing to scan (see modules/mailer/variables.tf). Set
 # identically in both environments — not an environment-specific decision.
 #
+# recipient_allowlist = null: production mails its real users, so no
+# restriction — the module accepts null only when environment = "prod".
+#
 # First apply in a fresh account needs an image before the Lambdas can be
 # created — see the bootstrap note at the top of modules/mailer/main.tf.
 module "mailer" {
@@ -85,6 +88,7 @@ module "mailer" {
   sender_address             = "no-reply@insolvia.ai"
   cors_allowed_origin        = "https://${var.app_subdomain}"
   enable_attachment_scanning = false
+  recipient_allowlist        = null
   ecr_repository_url         = data.aws_ecr_repository.mailer.repository_url
   image_tag                  = local.environment
   tags                       = local.common_tags

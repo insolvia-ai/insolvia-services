@@ -132,3 +132,34 @@ def test_unknown_service_is_rejected(gateway):
         "/v1/services/other_service/messages", json=message()
     )
     assert response.status_code == 403
+
+
+def test_development_refuses_recipient_outside_allowlist(monkeypatch, caplog):
+    monkeypatch.setenv(
+        "MAILER_RECIPIENT_POLICY_JSON",
+        '{"mode": "allowlist", "domains": ["insolvia.ai"]}',
+    )
+    monkeypatch.setenv("MAILER_RUNTIME", "development")
+    monkeypatch.setattr("smtplib.SMTP", FakeSmtp)
+    sys.modules.pop("insolvia_mailer.entrypoints.development_server", None)
+    module = importlib.import_module("insolvia_mailer.entrypoints.development_server")
+    FakeSmtp.messages.clear()
+    client = module.app.test_client()
+
+    refused = client.post("/v1/services/insolvia_api/messages", json=message("m_out"))
+    allowed = client.post(
+        "/v1/services/insolvia_api/messages",
+        json=message("m_in") | {"to_address": "someone@insolvia.ai"},
+    )
+
+    assert refused.status_code == 422
+    assert refused.get_json() == {
+        "error": "RecipientNotAllowed",
+        "message": "recipient is not allowed in this environment",
+        "reason": "not_allowlisted",
+    }
+    assert allowed.status_code == 202
+    wait_for_messages(1)
+    assert [m["To"] for m in FakeSmtp.messages] == ["someone@insolvia.ai"]
+    assert "recipient@example.com" not in caplog.text
+    assert "mailer.recipient_refused" in caplog.text

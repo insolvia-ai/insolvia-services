@@ -15,6 +15,7 @@ from insolvia_mailer.core.errors import (
     AuthorizationError,
     ConflictError,
     MailerError,
+    RecipientNotAllowedError,
     RetryableError,
     ValidationError,
 )
@@ -44,6 +45,28 @@ def create_app(dependencies: ApiDependencies) -> Flask:
     @app.errorhandler(ValidationError)
     def validation_error(error: ValidationError) -> ResponseReturnValue:
         return jsonify({"error": "ValidationError", "message": str(error)}), 400
+
+    # 422, not 400 or 403: the request is well-formed and the caller is
+    # authorised — this environment just will not mail that recipient. A
+    # distinct error name lets a caller tell it apart from a bad request.
+    # Logged as a category and a count; the mailer never logs recipients.
+    @app.errorhandler(RecipientNotAllowedError)
+    def recipient_not_allowed(error: RecipientNotAllowedError) -> ResponseReturnValue:
+        logger.warning(
+            "mailer.recipient_refused service_id=%s application_message_id=%s "
+            "reason=%s refused_count=%d stage=admission",
+            error.service_id,
+            error.application_message_id,
+            error.reason,
+            error.refused_count,
+        )
+        return jsonify(
+            {
+                "error": "RecipientNotAllowed",
+                "message": str(error),
+                "reason": error.reason,
+            }
+        ), 422
 
     @app.errorhandler(RetryableError)
     def retryable_error(_error: RetryableError) -> ResponseReturnValue:

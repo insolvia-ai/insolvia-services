@@ -20,6 +20,13 @@ services:
       MAILER_RUNTIME: development
       MAILER_DEVELOPMENT_SERVICES_JSON: >-
         {"insolvia_api":{"sender_name":"Insolvia","sender_address":"no-reply@insolvia.ai","allowed_categories":["welcome","email_verification","password_reset","client_invitation"],"allowed_message_classes":["transactional"]}}
+      # Local sends to anyone by default: Mailpit never relays, so there is
+      # no one an unrestricted local stack could reach. Set it in your shell
+      # to try an environment's allowlist here, e.g. staging's:
+      #   MAILER_RECIPIENT_POLICY_JSON='{"mode":"allowlist","domains":["insolvia.ai"]}' scripts/dev-up.sh
+      # Unset in AWS means refuse-all (core/recipients.py); unset HERE means
+      # unrestricted only because this line supplies the default.
+      MAILER_RECIPIENT_POLICY_JSON: ${MAILER_RECIPIENT_POLICY_JSON:-{"mode":"unrestricted"}}
       MAILER_SMTP_HOST: mailpit
       MAILER_SMTP_PORT: "1025"
     ports:

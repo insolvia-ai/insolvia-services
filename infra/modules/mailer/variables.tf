@@ -36,6 +36,36 @@ variable "caller_role_name" {
   type        = string
 }
 
+# Who this environment may mail at all — services/mailer core/recipients.py
+# enforces it at admission (a 422 to the caller) and again at send. There is
+# deliberately NO default: every env root must say what it wants, and the one
+# way to say "anyone" is null, which only prod may say (validation below).
+# A non-null value with empty lists is legal and means "mail no one".
+#
+# Matching is exact: a domain entry admits that domain only (not its
+# subdomains), an address entry admits that address only. Lower-case entries
+# only, so what is written here is what gets compared.
+variable "recipient_allowlist" {
+  description = "Recipient domains and exact addresses this environment's mailer may send to. null = no restriction, allowed only when environment = \"prod\"."
+  type = object({
+    domains   = optional(list(string), [])
+    addresses = optional(list(string), [])
+  })
+
+  validation {
+    condition     = var.recipient_allowlist != null || var.environment == "prod"
+    error_message = "recipient_allowlist may be null (unrestricted) only in prod. Name the domains/addresses this environment may mail."
+  }
+
+  validation {
+    condition = var.recipient_allowlist == null ? true : alltrue(concat(
+      [for d in var.recipient_allowlist.domains : can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", d))],
+      [for a in var.recipient_allowlist.addresses : can(regex("^[^@\\sA-Z]+@[a-z0-9-]+(\\.[a-z0-9-]+)+$", a))],
+    ))
+    error_message = "recipient_allowlist entries must be lower-case: domains like \"insolvia.ai\" (no @), addresses like \"name@example.com\"."
+  }
+}
+
 variable "sender_address" {
   description = "The From address the insolvia_api service sends as. Both environments share the one insolvia.ai SES domain identity (infra/envs/shared/module.email), so this is deliberately the same in staging and prod."
   type        = string

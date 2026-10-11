@@ -62,3 +62,45 @@ def test_unsafe_attachment_status_is_terminal(status):
 def test_clean_attachment_is_loaded_and_verified():
     result = _attachments(FakeStore("NO_THREATS_FOUND"), manifest())
     assert result[0].data == b"pdf"
+
+
+def test_sender_refuses_what_was_queued_before_the_allowlist_narrowed(caplog):
+    from insolvia_mailer.core.config import ServiceConfig
+    from insolvia_mailer.core.models import MessageRequest
+    from insolvia_mailer.core.recipients import parse_recipient_policy
+    from insolvia_mailer.entrypoints.sender_lambda import _refused_recipient
+
+    service = ServiceConfig(
+        service_id="insolvia_api",
+        sender_name="Insolvia",
+        sender_address="no-reply@insolvia.ai",
+        allowed_categories=frozenset({"welcome"}),
+        allowed_message_classes=frozenset({"transactional"}),
+    )
+    request = MessageRequest.from_dict(
+        {
+            "schema_version": 1,
+            "application_message_id": "ins_123",
+            "category": "welcome",
+            "message_class": "transactional",
+            "to_address": "real.person@gmail.com",
+            "subject": "Welcome",
+            "html_body": "<p>Hello</p>",
+            "text_body": "Hello",
+        },
+        service,
+    )
+    staging = parse_recipient_policy(
+        '{"mode": "allowlist", "domains": ["insolvia.ai"]}'
+    )
+
+    assert _refused_recipient(staging, service, request) is True
+    assert _refused_recipient(parse_recipient_policy(None), service, request) is True
+    assert (
+        _refused_recipient(
+            parse_recipient_policy('{"mode": "unrestricted"}'), service, request
+        )
+        is False
+    )
+    assert "gmail" not in caplog.text
+    assert "reason=not_allowlisted refused_count=1 stage=send" in caplog.text
