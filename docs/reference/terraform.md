@@ -55,7 +55,8 @@ address, by [`state-migration.md`](../runbooks/state-migration.md), and auth
 [`auth-state-migration.md`](../runbooks/auth-state-migration.md).
 
 **`dev` holds auth alone: the ONE shared development pool**
-(`insolvia-dev-users`, at `insolvia-services/dev/terraform.tfstate`) that every
+(`insolvia-dev-users`, signing in on `dev-auth.insolvia.ai`, at
+`insolvia-services/dev/terraform.tfstate`) that every
 developer machine signs in against, applied by a human with
 `scripts/apply-dev-auth.sh`. Each machine's insolvia `infra/envs/dev` reads it
 through the SSM contract, exactly as staging and prod do; only identities are
