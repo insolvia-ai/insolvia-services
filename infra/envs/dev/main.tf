@@ -37,14 +37,24 @@ locals {
   }
 }
 
-# The same module staging and prod instantiate. Pool insolvia-dev-users,
-# prefix domain insolvia-dev-auth.auth.us-east-1.amazoncognito.com — no custom
-# domain (a quarter-hour of Cognito-managed CloudFront for a page only
-# developers load). Registers only the localhost origin every machine serves
-# the app on (`npx expo start --web --port 3000` in insolvia — pinned because
-# Cognito callback URLs are exact-match), which is identical on every machine
-# and so is part of why one pool works. No SES sender: Cognito's default sender
-# delivers to any address, with no sandbox in the way.
+data "aws_route53_zone" "main" {
+  name = var.domain_name
+}
+
+# The account's one wildcard cert (*.insolvia.ai, infra/envs/shared), which
+# covers dev-auth exactly as it covers staging-auth: one label.
+data "aws_acm_certificate" "wildcard" {
+  domain      = "*.${var.domain_name}"
+  statuses    = ["ISSUED"]
+  most_recent = true
+}
+
+# The same module staging and prod instantiate. Pool insolvia-dev-users.
+# Registers only the localhost origin every machine serves the app on
+# (`npx expo start --web --port 3000` in insolvia — pinned because Cognito
+# callback URLs are exact-match), which is identical on every machine and so is
+# part of why one pool works. No SES sender: Cognito's default sender delivers
+# to any address, with no sandbox in the way.
 module "auth" {
   source = "../../modules/auth"
 
@@ -52,6 +62,26 @@ module "auth" {
   environment = local.environment
 
   web_origins = ["http://localhost:3000"]
+
+  # Sign-in on our own domain: dev-auth.insolvia.ai, beside the prefix domain
+  # (insolvia-dev-auth.auth.us-east-1.amazoncognito.com, which keeps serving).
+  # Once ruled out for dev — a per-machine pool would have meant a quarter-hour
+  # of Cognito-managed CloudFront and a Route53 record PER MACHINE — and
+  # possible now that dev is one shared pool: it is one domain, created once.
+  # What it buys: dev takes the same custom-domain path staging and prod do,
+  # and a federated identity provider (the day there is one) registers a
+  # redirect URI we own, https://dev-auth.insolvia.ai/oauth2/idpresponse.
+  #
+  # Same dependency as staging's: Cognito refuses a custom domain unless the
+  # PARENT (the apex, insolvia.ai) resolves, which it does only while insolvia's
+  # prod marketing distribution is enabled. Verify with `dig +short insolvia.ai A`.
+  #
+  # The first apply blocks 15-20 minutes while Cognito provisions its own
+  # CloudFront distribution. insolvia's app picks the hostname up by itself:
+  # the contract's `domain` parameter prefers the custom domain.
+  custom_domain   = var.auth_subdomain
+  certificate_arn = data.aws_acm_certificate.wildcard.arn
+  hosted_zone_id  = data.aws_route53_zone.main.zone_id
 
   # The MCP inspector's loopback-callback client (#261): connecting
   # `npx @modelcontextprotocol/inspector` to insolvia's locally running

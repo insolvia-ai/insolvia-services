@@ -1,7 +1,23 @@
 # Cutover: auth (Cognito) leaves the insolvia repo
 
-**Status: not yet executed.** When it has run, record the date, who ran it and
-the backup directory names here. Do not delete the page.
+**Status: executed 2026-10-12** by the maintainer (andreas.savva), staging and
+prod. Backups, on the machine that ran it:
+`~/.local/state/insolvia/state-migration/staging-auth-20261012T161532Z` and
+`prod-auth-20261012T161058Z`. Both moves passed the script's two verification
+plans (prod's kept two pending in-place mailer Lambda updates from #3, on a
+yes). Afterwards insolvia-services' release applied staging (0 changed) and
+prod (the 2 mailer updates), and insolvia's release applied staging with "No
+changes" and passed its integration and e2e sign-in tiers.
+
+What did not go to plan, for whoever runs a move like this next:
+- **insolvia-services#2 (the first design) was merged before any move.** Its
+  release stopped at the state guard, so nothing was created. The guard is
+  the reason that was harmless; keep it.
+- **Staging was moved, rolled back with the backups, and moved again.** The
+  rollback restored both states together, so they stayed consistent
+  throughout. The rule it confirmed: never push only one of the two backups.
+- **The first prod attempt was refused and restored** because prod had not
+  been promoted yet. The check worked as designed; promote first.
 
 The decision is insolvia's
 [ADR 0026](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0026-auth-is-a-shared-service.md),
@@ -77,7 +93,7 @@ All runs were read-only, with copies deleted afterwards.
 |---|---|---|---|
 | 2026-10-11 | staging | the first design (insolvia looked the pool up by name) | **PASSED.** Here: no resource changes, only the `auth_*` outputs. insolvia: "No changes. Your infrastructure matches the configuration." Re-run after merging insolvia's main (#451): same |
 | 2026-10-11 | prod | the first design | **FAILED, as expected.** Here it would *create* `client.portal` and `client.mcp["claude"]`. Promote insolvia's prod first |
-| — | staging | **this design (SSM contract)** | **Not yet runnable.** The contract parameters must exist first, so it can only run once the prep PR has released to staging. Run step 1 then |
+| 2026-10-12 | staging | **this design (SSM contract)**, after the prep PR (insolvia#453) released to staging | **PASSED.** 8 blocks / 15 instances moved (the 7 contract parameters with them), 4 kept in insolvia. Here: no resource changes, only the `auth_*` outputs. insolvia (#452's code): "No changes. Your infrastructure matches the configuration." |
 
 ## Before you start
 
@@ -212,7 +228,9 @@ Run this once, from this repo at `main` (after step 5):
 scripts/apply-dev-auth.sh
 ```
 
-It creates `insolvia-dev-users` (prefix domain `insolvia-dev-auth`), its
+It creates `insolvia-dev-users` (sign-in on `dev-auth.insolvia.ai`, beside the
+prefix domain `insolvia-dev-auth`; the custom domain blocks the first apply for
+15–20 minutes and needs `dig +short insolvia.ai A` to resolve), its
 clients and the `/insolvia/dev/auth/*` parameters. It refuses any plan that
 destroys or replaces a pool or client.
 
