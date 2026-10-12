@@ -77,7 +77,7 @@ All runs were read-only, with copies deleted afterwards.
 |---|---|---|---|
 | 2026-10-11 | staging | the first design (insolvia looked the pool up by name) | **PASSED.** Here: no resource changes, only the `auth_*` outputs. insolvia: "No changes. Your infrastructure matches the configuration." Re-run after merging insolvia's main (#451): same |
 | 2026-10-11 | prod | the first design | **FAILED, as expected.** Here it would *create* `client.portal` and `client.mcp["claude"]`. Promote insolvia's prod first |
-| — | staging | **this design (SSM contract)** | **Not yet runnable.** The contract parameters must exist first, so it can only run once the prep PR has released to staging. Run step 1 then |
+| 2026-10-12 | staging | **this design (SSM contract)**, after the prep PR (insolvia#453) released to staging | **PASSED.** 8 blocks / 15 instances moved (the 7 contract parameters with them), 4 kept in insolvia. Here: no resource changes, only the `auth_*` outputs. insolvia (#452's code): "No changes. Your infrastructure matches the configuration." |
 
 ## Before you start
 
@@ -212,7 +212,9 @@ Run this once, from this repo at `main` (after step 5):
 scripts/apply-dev-auth.sh
 ```
 
-It creates `insolvia-dev-users` (prefix domain `insolvia-dev-auth`), its
+It creates `insolvia-dev-users` (sign-in on `dev-auth.insolvia.ai`, beside the
+prefix domain `insolvia-dev-auth`; the custom domain blocks the first apply for
+15–20 minutes and needs `dig +short insolvia.ai A` to resolve), its
 clients and the `/insolvia/dev/auth/*` parameters. It refuses any plan that
 destroys or replaces a pool or client.
 

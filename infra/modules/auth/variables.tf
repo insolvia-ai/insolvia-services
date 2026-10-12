@@ -29,13 +29,12 @@ variable "web_origins" {
 }
 
 # ── Custom auth domain (optional) ───────────────────────────────
-# Set on staging and prod; NULL on dev, which keeps the Cognito prefix domain.
+# Set on staging (staging-auth) and dev (dev-auth); prod's auth.insolvia.ai is
+# staged behind staging's. Null keeps only the Cognito prefix domain.
 #
-# Dev is deliberately excluded rather than overlooked. A custom domain takes
-# 15-20 minutes to create and the same to delete, needs a DNS record, and is
-# per-pool — a quarter-hour of Cognito-managed CloudFront for a page only
-# developers load, on the shared dev pool. The prefix domain
-# is fully functional; only the address bar differs.
+# Dev was once excluded: with a pool PER MACHINE, a custom domain meant 15-20
+# minutes of Cognito provisioning and a Route53 record per machine. Dev is one
+# shared pool now, so it is one domain, created once.
 #
 # One label only: the shared certificate is `*.insolvia.ai`, which covers
 # `auth.insolvia.ai` but NOT `auth.staging.insolvia.ai`. Hence the flat

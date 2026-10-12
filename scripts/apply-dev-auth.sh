@@ -74,7 +74,8 @@ fi
 
 echo
 warn "Review the plan above. The first apply creates insolvia-dev-users, its"
-warn "prefix domain, its clients and the /insolvia/dev/auth/* parameters. After"
+warn "prefix domain, dev-auth.insolvia.ai (15-20 minutes: Cognito provisions"
+warn "CloudFront), its clients and the /insolvia/dev/auth/* parameters. After"
 warn "that, expect in-place updates only."
 read -r -p "Apply this plan? [y/N] " reply
 [[ "$reply" == [yY] ]] || die "aborted — nothing applied"
