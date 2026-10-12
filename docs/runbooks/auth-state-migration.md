@@ -1,7 +1,23 @@
 # Cutover: auth (Cognito) leaves the insolvia repo
 
-**Status: not yet executed.** When it has run, record the date, who ran it and
-the backup directory names here. Do not delete the page.
+**Status: executed 2026-10-12** by the maintainer (andreas.savva), staging and
+prod. Backups, on the machine that ran it:
+`~/.local/state/insolvia/state-migration/staging-auth-20261012T161532Z` and
+`prod-auth-20261012T161058Z`. Both moves passed the script's two verification
+plans (prod's kept two pending in-place mailer Lambda updates from #3, on a
+yes). Afterwards insolvia-services' release applied staging (0 changed) and
+prod (the 2 mailer updates), and insolvia's release applied staging with "No
+changes" and passed its integration and e2e sign-in tiers.
+
+What did not go to plan, for whoever runs a move like this next:
+- **insolvia-services#2 (the first design) was merged before any move.** Its
+  release stopped at the state guard, so nothing was created. The guard is
+  the reason that was harmless; keep it.
+- **Staging was moved, rolled back with the backups, and moved again.** The
+  rollback restored both states together, so they stayed consistent
+  throughout. The rule it confirmed: never push only one of the two backups.
+- **The first prod attempt was refused and restored** because prod had not
+  been promoted yet. The check worked as designed; promote first.
 
 The decision is insolvia's
 [ADR 0026](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0026-auth-is-a-shared-service.md),
