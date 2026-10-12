@@ -8,7 +8,7 @@
 #   docs/runbooks/state-migration.md       — the mailer (2026-10-11, done)
 #   docs/runbooks/auth-state-migration.md  — auth (Cognito)
 #
-#   scripts/migrate-module-state.sh <staging|prod|dev> --module <module.name> \
+#   scripts/migrate-module-state.sh <staging|prod> --module <module.name> \
 #     --insolvia-dir <path> [--keep <type.name>]... [--rehearse]
 #
 #   scripts/migrate-module-state.sh staging --module module.auth --insolvia-dir ../insolvia \
@@ -35,12 +35,6 @@
 #             and the overrides. Nothing is pushed and no state is locked; no
 #             prompt is asked (each question is printed instead). Run it
 #             before the real thing, and for prod again right before prod.
-#
-# `dev` moves THIS MACHINE's per-machine roots (keys
-# insolvia/dev/<account>/<machine-id>/… → insolvia-services/dev/<account>/<machine-id>/…),
-# with the machine identity the insolvia repo's scripts/dev-aws-common.sh
-# derives from ~/.config/insolvia/machine-id. Each developer runs it once, on
-# their own machine.
 #
 # WHY A SCRIPT A HUMAN RUNS, AND NOT A WORKFLOW. Everything else that writes
 # staging/prod state runs in CI. This does not: it needs BOTH repositories
@@ -81,7 +75,7 @@ ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { die "Usage: $0 <staging|prod|dev> --module <module.name> --insolvia-dir <path> [--keep <type.name>]... [--rehearse]"; }
+usage() { die "Usage: $0 <staging|prod> --module <module.name> --insolvia-dir <path> [--keep <type.name>]... [--rehearse]"; }
 
 ENV="${1:-}"; shift || true
 INSOLVIA_DIR=""
@@ -98,7 +92,7 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-[[ "$ENV" == staging || "$ENV" == prod || "$ENV" == dev ]] || usage
+[[ "$ENV" == staging || "$ENV" == prod ]] || usage
 [[ -n "$INSOLVIA_DIR" ]] || usage
 # A root-level module call only: module.<name>. Nested addresses and
 # resources outside a module are not what this was written or tested for.
@@ -140,33 +134,13 @@ esac
 ok "Authenticated as $caller"
 
 # ── Where each state lives ─────────────────────────────────────────
-# staging/prod: the keys are in each root's backend.tf. dev: neither root
-# carries a key — both are per machine and injected at init — so derive them,
-# and the variables a dev plan needs, from the machine identity exactly as
-# insolvia's scripts/dev-aws-common.sh does.
+# The keys are in each root's backend.tf. (There is no `dev` here: insolvia's
+# dev roots are per machine and this repo's dev pool is shared and new, so
+# nothing in dev moves — the auth runbook § Shared dev pool.) The arrays stay
+# empty; they are where per-root init and plan arguments would go.
 OLD_INIT=(); NEW_INIT=(); PLAN_VARS=()
-if [[ "$ENV" == dev ]]; then
-  id_file="${XDG_CONFIG_HOME:-$HOME/.config}/insolvia/machine-id"
-  [[ -f "$id_file" ]] || die "No machine id at $id_file — this machine has no dev environment to move."
-  machine_id="$(tr -d '[:space:]' < "$id_file" | tr '[:upper:]' '[:lower:]')"
-  [[ "$machine_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Invalid machine id in $id_file."
-  machine_short_id="$(printf '%s' "$machine_id" | tr -d '-' | cut -c1-12)"
-  OLD_KEY="insolvia/dev/$account/$machine_id/terraform.tfstate"
-  NEW_KEY="insolvia-services/dev/$account/$machine_id/terraform.tfstate"
-  OLD_INIT=(-reconfigure "-backend-config=key=$OLD_KEY")
-  NEW_INIT=(-reconfigure "-backend-config=key=$NEW_KEY")
-  PLAN_VARS=(
-    "-var=aws_region=${AWS_REGION:-us-east-1}"
-    "-var=aws_principal_arn=$caller"
-    "-var=machine_id=$machine_id"
-    "-var=machine_short_id=$machine_short_id"
-    "-var=machine_name=$(hostname -s 2>/dev/null || hostname)"
-  )
-  log "Machine $machine_short_id: $OLD_KEY → $NEW_KEY"
-else
-  NEW_KEY="insolvia-services/$ENV/terraform.tfstate"
-  grep -q "key *= *\"$NEW_KEY\"" "$NEW_DIR/backend.tf" || die "$NEW_DIR/backend.tf does not use key $NEW_KEY — refusing to guess where the state goes."
-fi
+NEW_KEY="insolvia-services/$ENV/terraform.tfstate"
+grep -q "key *= *\"$NEW_KEY\"" "$NEW_DIR/backend.tf" || die "$NEW_DIR/backend.tf does not use key $NEW_KEY — refusing to guess where the state goes."
 
 # ── Preconditions ──────────────────────────────────────────────────
 # Without --keep, the whole module leaves insolvia, so its code must no longer
@@ -223,7 +197,7 @@ mkdir -p "$BACKUP"; chmod 700 "$BACKUP"
 terraform -chdir="$OLD_DIR" state pull > "$BACKUP/insolvia.tfstate"
 [[ -s "$BACKUP/insolvia.tfstate" ]] || die "insolvia/$ENV has no state — nothing to move."
 # An "empty destination" — no state object at the key yet — is the case the
-# mailer's first move and every developer machine's dev move start from.
+# mailer's first move started from (auth's lands in a root that holds it).
 # Decided by the OBJECT, not by what `state pull` prints: depending on the
 # Terraform version that is nothing, or an empty state with a fresh lineage
 # that was never written anywhere. Recorded so the restore knows whether to

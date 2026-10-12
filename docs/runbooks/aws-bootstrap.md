@@ -239,8 +239,9 @@ can assume it. *Done for account `521762924626` on 2026-08-10.*
 
 ## 8. Auth — the user pools, before anything of insolvia's
 
-insolvia's env roots find their user pool and app clients **by name** (its
-`modules/auth`), so they cannot plan until the pool exists. The pool is
+insolvia's env roots read their user pool and app clients from the SSM
+contract `/insolvia/<env>/auth/*` (published by `modules/auth`), so they cannot
+plan until the pool exists. The pool is
 `module.auth` in this repo's `staging` and `prod` roots — but those roots also
 hold the mailer, which looks up insolvia's API role and fails the plan until
 step 9 has created it. Break the circle with a **targeted** first apply of
@@ -265,6 +266,14 @@ already exist.
 
 Step 7's service-linked role must exist first, because both pools send
 through SES.
+
+The shared development pool has no such circle (its root holds auth alone),
+so it is one ordinary human apply, before any developer runs insolvia's
+`scripts/dev-aws-setup.sh`:
+
+```bash
+scripts/apply-dev-auth.sh
+```
 
 ## 9. The app's environments **(insolvia)**
 

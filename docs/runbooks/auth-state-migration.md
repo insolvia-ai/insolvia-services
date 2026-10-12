@@ -6,43 +6,56 @@ the backup directory names here. Do not delete the page.
 The decision is insolvia's
 [ADR 0026](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0026-auth-is-a-shared-service.md),
 which amends ADR 0025: auth is a shared service. This runbook moves the live
-user pools, their hosted domains and their app clients out of insolvia's state
-into this repo's. It follows the pattern of the mailer's move,
-[`state-migration.md`](state-migration.md). It differs in four ways, all
-covered below:
+staging and prod user pools, their hosted domains, their app clients and
+their **SSM contract parameters** out of insolvia's state into this repo's.
+It also stands up the **shared development pool**, which replaces every
+per-machine one. It follows the pattern of the mailer's move,
+[`state-migration.md`](state-migration.md), and differs from it in five ways:
 
 1. **The module splits.** `module.auth` exists on both sides afterwards.
-   Seven resource blocks move here. Four stay in insolvia at their unchanged
-   addresses: the two managed-login branding styles and the two
-   `AdminCreateUser` grants. `--keep` names those four.
+   What moves here: the pool, its domains, the alias record, the clients and
+   the contract parameters. What stays in insolvia, at unchanged addresses:
+   the two managed-login branding styles and the two `AdminCreateUser`
+   grants. `--keep` names those four.
 2. **This repo's roots are not empty.** They already hold `module.mailer`.
    The script refuses only if this side already holds something under
    `module.auth`.
-3. **Prod has a precondition.** Prod's pool lacks the portal and `mcp-claude`
+3. **There is a prep PR.** insolvia reads the pool through
+   `/insolvia/<env>/auth/*` SSM parameters. Those parameters must exist
+   before the move, so that the move's verification plan of insolvia can
+   read them. So insolvia's **current** `module.auth` publishes them first, in
+   a small PR released ahead of the cutover. They then travel with the module
+   like everything else, with the same addresses
+   (`module.auth.aws_ssm_parameter.contract["<key>"]`) and no recreate.
+4. **Prod has a precondition.** Prod's pool lacks the portal and `mcp-claude`
    clients that insolvia's main already declares. Until insolvia's prod has
-   applied main, the move would plan to *create* clients here, and the
-   script refuses that.
-4. **Developer machines move too**, each one once, by its owner.
+   applied main (and the prep PR), the move would plan to *create* resources
+   here, and the script refuses that.
+5. **Dev does not move. It is replaced.** Development gets one shared pool,
+   created fresh here (§ Shared dev pool). Each machine's old per-machine
+   pool is destroyed by its owner's next `dev-aws-setup.sh`, and the
+   developer reseeds.
 
 | Root | State key | What moves |
 |---|---|---|
-| staging | `insolvia/staging/…` → `insolvia-services/staging/…` | 7 blocks, 8 instances: pool, prefix + custom domain, the custom domain's alias record, app / portal / mcp[claude, inspector] clients |
-| prod | `insolvia/prod/…` → `insolvia-services/prod/…` | pool, prefix domain, app / portal / mcp[claude] clients (once prod has applied main) |
-| dev, per machine | `insolvia/dev/<acct>/<machine>/…` → `insolvia-services/dev/<acct>/<machine>/…` | pool, prefix domain, app / portal / mcp[claude, inspector] clients |
+| staging | `insolvia/staging/…` → `insolvia-services/staging/…` | 8 blocks, 15 instances: pool, prefix + custom domain, the custom domain's alias record, app / portal / mcp[claude, inspector] clients, the 7 contract parameters |
+| prod | `insolvia/prod/…` → `insolvia-services/prod/…` | pool, prefix domain, app / portal / mcp[claude] clients, the 7 contract parameters (once prod has applied main and the prep PR) |
+| dev | nothing moves | the shared pool is created new at `insolvia-services/dev/terraform.tfstate` |
 
-**Nothing in AWS is created, changed or destroyed.** Every pool keeps its id,
-users and subjects. Every client keeps its id, so the SSM parameters, the
-deployed app bundles and every token already issued stay valid.
+**For staging and prod, nothing in AWS is created, changed or destroyed.**
+Every pool keeps its id, users and subjects. Every client keeps its id, so
+the API's SSM configuration, the deployed app bundles and every token already
+issued stay valid.
 
 ## What can go wrong, and what stops it
 
 | Ordering | Would cause | Stopped by |
 |---|---|---|
-| insolvia's **new** code applies before the move | it would forget the pool (no longer declared there); a forgotten pool can still be recovered | the `removed { … destroy = false }` blocks insolvia's PR adds to all three env roots; without them this would be a **destroy** |
+| insolvia's **new** code applies before the move | it would forget the pool and its parameters (no longer declared there). A forget can be recovered; insolvia's next plan then still reads the parameters, which still exist | the `removed { … destroy = false }` blocks insolvia's PR adds to its staging and prod roots. Without them this would be a **destroy** |
 | insolvia's **old** code applies after the move | a second pool, because the old code still declares one and the state no longer holds it. Cognito allows duplicate names, and the domain prefix collides partway through | step 2 freezes insolvia's release **and** the dispatchable `infra-staging.yml` / `infra-prod.yml` |
 | this repo's **old** code (main, no `module.auth`) applies after the move | it would **destroy** the pool. Staging has no deletion protection, clients never do | step 2 freezes this repo's release **and** the dispatchable `mailer-staging.yml` / `mailer-prod.yml` |
-| this repo's **new** code applies before the move | a second pool | the deploy workflows' state guard: they refuse when `module.auth` (or `module.mailer`) is missing from the state, unless someone passes `bootstrap: true` |
-| any later plan destroys or replaces a pool or client | every account gone, or a new client id | the deploy workflows refuse such a plan unless a human dispatches with `allow_auth_destroy: true`; a release cannot |
+| this repo's **new** code applies before the move | a second pool, whose contract parameters collide with the live ones | the deploy workflows' state guard: they refuse when `module.auth` (or `module.mailer`) is missing from the state, unless someone passes `bootstrap: true` |
+| any later plan destroys or replaces a pool or client | every account gone, or a new client id | the deploy workflows refuse such a plan unless a human dispatches with `allow_auth_destroy: true`; a release cannot. `apply-dev-auth.sh` refuses the same for dev |
 
 The move itself is
 [`scripts/migrate-module-state.sh`](../../scripts/migrate-module-state.sh),
@@ -60,29 +73,33 @@ If either plan is wrong, it **restores both states automatically**.
 
 All runs were read-only, with copies deleted afterwards.
 
-| Date | Env | Result |
-|---|---|---|
-| 2026-10-11 | staging | **PASSED.** Here: no resource changes, only seven new `auth_*` outputs. insolvia: "No changes. Your infrastructure matches the configuration." |
-| 2026-10-11 | dev (one machine) | **PASSED.** Here: no resource changes, outputs only. insolvia's dev root: no changes. |
-| 2026-10-11 | prod | **FAILED, as expected.** Here it would *create* `aws_cognito_user_pool_client.portal` and `.mcp["claude"]`, and update the pool in place. insolvia's lookup postcondition fails because the portal client does not exist. Promote insolvia's prod first. |
+| Date | Env | Design rehearsed | Result |
+|---|---|---|---|
+| 2026-10-11 | staging | the first design (insolvia looked the pool up by name) | **PASSED.** Here: no resource changes, only the `auth_*` outputs. insolvia: "No changes. Your infrastructure matches the configuration." Re-run after merging insolvia's main (#451): same |
+| 2026-10-11 | prod | the first design | **FAILED, as expected.** Here it would *create* `client.portal` and `client.mcp["claude"]`. Promote insolvia's prod first |
+| — | staging | **this design (SSM contract)** | **Not yet runnable.** The contract parameters must exist first, so it can only run once the prep PR has released to staging. Run step 1 then |
 
 ## Before you start
 
-- **Both PRs are open and green:** insolvia's (the consumer `modules/auth`,
-  the `removed` blocks, and the dev scripts calling this repo) and this
-  repo's (`modules/auth`, `module.auth` in staging/prod, the `dev` root, the
-  generalised script, the guards).
-- **Prod has applied insolvia's main**, through a normal promotion of a
-  release that includes everything up to insolvia's PR base. Check with
-  step 1's prod rehearsal. If it still plans client creates here, you are
-  not ready.
+- **The prep PR has merged, and its release has applied staging** (prod as
+  well, before step 4). Check:
+  `aws ssm get-parameters-by-path --path /insolvia/staging/auth --query 'Parameters[].Name'`
+  must list seven parameters.
+- **Both cutover PRs are open and green.** insolvia's: the consumer
+  `modules/auth`, the `auth_contract` reader, `removed` blocks, the
+  `dev-shared` root. This repo's: `modules/auth` with `contract.tf`,
+  `module.auth` in staging/prod/dev, the guards, the script.
+- **Prod has applied insolvia's main**, through a normal promotion. Check
+  with step 1's prod rehearsal: if it still plans creates here, you are not
+  ready.
 - Checkouts side by side: this repo **at its PR's branch**, insolvia **at its
   PR's branch**.
 - `aws login` as yourself in account `521762924626` (see the
   `insolvia-aws-auth` skill).
 - About 45 minutes during which nothing merges in either repo.
 
-The `--keep` list is the same everywhere. It is written out once here:
+The `--keep` list is the same for both environments. It is written out once
+here:
 
 ```bash
 KEEP=(--keep aws_cognito_managed_login_branding.web --keep aws_cognito_managed_login_branding.portal --keep aws_iam_role_policy.api_invite --keep aws_iam_role_policy.admin_invite)
@@ -98,7 +115,8 @@ scripts/migrate-module-state.sh prod    --module module.auth --insolvia-dir ../i
 ```
 
 Each run must end with `REHEARSAL PASSED`. This step pushes nothing and takes
-no locks, so it is safe to run while the pipelines are still live.
+no locks, so it is safe while the pipelines are live. Record the result in
+the table above.
 
 ### 2. Freeze both repositories
 
@@ -115,7 +133,7 @@ done
 
 Cancel **every** run that has not completed, including one waiting at a
 `promote` gate. If an old waiting run is approved after the move, it applies
-the old code (see the table above).
+the old code.
 
 ```bash
 gh run cancel <id> -R <repo>
@@ -138,10 +156,9 @@ script stopped. Read its output, fix the cause, and run it again.
 scripts/migrate-module-state.sh prod --module module.auth --insolvia-dir ../insolvia "${KEEP[@]}"
 ```
 
-You may see in-place updates on the pool here (the prod rehearsal showed
-one). If so, read the diff the script points to before you answer. A create,
-destroy or replace is refused and restored without asking. That includes the
-client creates the rehearsal saw, which mean prod has not applied main yet.
+You may see in-place updates on the pool here. If so, read the diff the
+script points to before you answer. A create, destroy or replace is refused
+and restored without asking.
 
 ### 5. Merge insolvia's PR, then this repo's
 
@@ -150,7 +167,7 @@ insolvia's first so its `main` matches its state as soon as possible.
 
 ### 6. Unfreeze this repo first
 
-The pool lives here now, and insolvia's plan reads it by name.
+The pool and its parameters live here now.
 
 ```bash
 for wf in release.yml mailer-staging.yml mailer-prod.yml; do gh workflow enable "$wf" -R insolvia-ai/insolvia-services; done
@@ -170,10 +187,8 @@ gh workflow run release.yml -R insolvia-ai/insolvia --ref main
 ```
 
 The staging infra leg should show **no changes**. The `removed` blocks are
-no-ops because the state no longer holds those addresses. The lookups
-resolve to the same ids, so every SSM parameter, the branding and the grants
-are unchanged. The app, API and MCP legs read the same `auth_*` outputs they
-always did. Approve its promotion when you normally would.
+no-ops because the state no longer holds those addresses, and the contract
+reads return the same ids. Approve its promotion when you normally would.
 
 ### 8. Prove it
 
@@ -184,32 +199,40 @@ for env in staging prod; do
 done
 ```
 
-Each value should match what it was before step 3: the same pool id and the
-same client ids. Then sign in on `staging-app.insolvia.ai` and on the
-portal. The `app-staging.yml` flows tier (`auth-round-trip`,
-`client-portal`) does this on every release, so a green insolvia staging
-release from step 7 is the proof.
+Each value should match what it was before step 3. Then sign in on
+`staging-app.insolvia.ai` and on the portal. The `app-staging.yml` flows
+tier (`auth-round-trip`, `client-portal`) does this on every release, so a
+green insolvia staging release from step 7 is the proof.
 
-### 9. Developer machines, each one once
+### 9. Shared dev pool
 
-Each developer, on their own machine, with both checkouts at `main`:
+Run this once, from this repo at `main` (after step 5):
 
 ```bash
-scripts/migrate-module-state.sh dev --module module.auth --insolvia-dir ../insolvia "${KEEP[@]}" --rehearse
-scripts/migrate-module-state.sh dev --module module.auth --insolvia-dir ../insolvia "${KEEP[@]}"
+scripts/apply-dev-auth.sh
 ```
 
-Then run insolvia's `./scripts/dev-aws-setup.sh` as usual. Until this has
-run, `dev-aws-auth.sh apply` (which setup calls) refuses to create a second
-pool and points here. A machine that never had a dev environment needs
-nothing: setup creates its pool here directly.
+It creates `insolvia-dev-users` (prefix domain `insolvia-dev-auth`), its
+clients and the `/insolvia/dev/auth/*` parameters. It refuses any plan that
+destroys or replaces a pool or client.
+
+Then each developer, on their own machine, with insolvia at `main`:
+
+```bash
+./scripts/dev-aws-setup.sh   # brands the shared pool (infra/envs/dev-shared), then DESTROYS this machine's old per-machine pool
+./scripts/dev-aws-seed.sh    # your dev account, now in the shared pool, plus your firm in this machine's tables
+```
+
+The destroy is expected and its plan says so: `insolvia-dev-<machine-id>-users`,
+its domain, its clients and its branding. Its test accounts go with it, and
+`dev-aws-seed.sh` recreates yours. Firm rows keyed on the old subjects are
+reseeded too: `dev-aws-reset.sh` first if you want the tables clean.
 
 ### 10. Afterwards
 
 - Once insolvia's staging and prod have each applied a release after the
-  move, delete the `removed` blocks from insolvia's staging and prod roots
-  in one small PR. Delete the dev root's once every developer machine has
-  moved.
+  move, delete the `removed` blocks from insolvia's staging and prod roots in
+  one small PR.
 - Add `Terraform validate (dev)` to this repo's required checks:
   `scripts/update-ruleset.sh add "Terraform validate (dev)"`.
 - Record the execution at the top of this page.

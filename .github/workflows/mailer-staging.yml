@@ -18,8 +18,9 @@ name: Mailer · Deploy · Staging
 #   • THE EMPTY-STATE GUARD: the state must already hold module.mailer AND
 #     module.auth. An apply onto a state missing one would create a second
 #     copy next to the live one — for the mailer, colliding on every fixed
-#     name; for auth, a second pool of the same name (Cognito allows it), which
-#     breaks insolvia's by-name lookup. A missing module means a fresh account
+#     name; for auth, a second pool of the same name (Cognito allows it),
+#     whose contract parameters then collide with the live pool's. A missing
+#     module means a fresh account
 #     (pass `bootstrap: true`) or a state move from insolvia that has not run
 #     (docs/runbooks/state-migration.md, docs/runbooks/auth-state-migration.md)
 #     — which is exactly when this must refuse.
@@ -35,7 +36,7 @@ name: Mailer · Deploy · Staging
 #
 # The insolvia repo's staging API must exist first — the mailer looks up its
 # execution role by name — while insolvia's staging root needs THIS root's
-# user pool to plan. A fresh account breaks the circle with a targeted first
+# auth contract parameters to plan. A fresh account breaks the circle with a targeted first
 # apply of module.auth; docs/runbooks/aws-bootstrap.md has the order.
 
 on:
@@ -103,7 +104,7 @@ jobs:
       # docs/runbooks/auth-state-migration.md. Applying then would create a
       # SECOND mailer (colliding on every fixed name) or a second user pool
       # (Cognito does not make pool names unique, so that one would succeed
-      # and leave insolvia's by-name lookup ambiguous).
+      # and its SSM contract parameters would collide with the live ones).
       - name: Refuse to apply onto a state missing a module
         env:
           BOOTSTRAP: ${{ inputs.bootstrap }}

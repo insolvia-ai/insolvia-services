@@ -21,16 +21,11 @@
 #     needs a consumer's role name, and a fresh account has no cycle between
 #     this root and insolvia's.
 #
-# THE NAMES ARE THE CONTRACT. insolvia finds everything here by name, never by
-# remote state (its modules/auth: data "aws_cognito_user_pools" and
-# data "aws_cognito_user_pool_clients"). So these names are an interface,
-# and renaming one breaks insolvia's next plan — loudly, by design:
-#   insolvia-<env>-users          the pool (must be the ONLY pool of that name)
-#   insolvia-<env>-app            the web SPA's client
-#   insolvia-<env>-portal         the client portal's client
-#   insolvia-<env>-mcp-<harness>  every MCP harness client — the PREFIX is
-#                                 the MCP service's allowlist, so adding a
-#                                 client here IS allowing it there
+# THE SSM PARAMETERS ARE THE CONTRACT. insolvia reads /insolvia/<env>/auth/*
+# (published by contract.tf) — never this module's state, and
+# never the pool by name. Every MCP harness client registered here lands in
+# the mcp-client-ids parameter, so adding a client here IS allowing it in
+# insolvia's MCP service.
 #
 # NEVER RECREATE A POOL OR A CLIENT. A new pool mints new subjects, and every
 # row insolvia keys on a subject (firm users, case ownership, client bindings)
@@ -266,10 +261,10 @@ resource "aws_cognito_user_pool_domain" "main" {
   # and a depends_on cannot cross a repository. What is left of the guarantee:
   #   • steady state is unaffected — every live client already has its style,
   #     and nothing here touches one;
-  #   • a FRESH pool (a new environment, a new developer machine) serves the
+  #   • a FRESH pool (a new environment, the shared dev pool's first apply) serves the
   #     "unavailable" page between this apply and the consumer's, which in
   #     every one of those cases is an environment nobody is signed in to yet.
-  #     insolvia's scripts/dev-aws-setup.sh runs the two back to back;
+  #     for dev, insolvia's scripts/dev-aws-setup.sh brands the shared pool;
   #   • a REPLACED client loses its style the same way — and a planned
   #     replacement of any client here is already a hard stop (see the
   #     header), because it also changes the id every consumer verifies.
@@ -504,9 +499,8 @@ resource "aws_cognito_user_pool_client" "portal" {
 # issued for the MCP server" is verified as "this token names one of these
 # client ids" (insolvia_core.auth.verify_access_token_for_clients). The MCP
 # service's allowlist is derived from these resources — never hand-listed —
-# via insolvia's SSM parameter (it finds these clients by the
-# insolvia-<env>-mcp- name prefix), so registering a harness here IS adding
-# it to the allowlist.
+# via the mcp-client-ids contract parameter (contract.tf), so
+# registering a harness here IS adding it to the allowlist.
 #
 # Callback URLs are each harness's PUBLISHED redirect endpoints, matched
 # exactly by Cognito (no wildcards):

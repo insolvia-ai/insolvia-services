@@ -9,13 +9,14 @@ aren't working.
 
 - **Six roots, and only `shared`, `staging` and `prod` are CI-applied.**
   `ci-trust` and `account-access` are human-applied by design (below);
-  `dev` is per developer machine, applied only by `scripts/dev-aws-auth.sh`
-  with the developer's own credentials. `staging` and `prod` hold **the
+  `dev` — the ONE shared development pool — is applied by a human with
+  `scripts/apply-dev-auth.sh` when its configuration changes. `staging` and `prod` hold **the
   mailer and auth** (`module.mailer`, `module.auth`); every app stack for
   those environments is the insolvia repo's root of the same name, with its
-  own state key. `dev` holds **auth alone** — a developer's own pool, which
-  insolvia's `infra/envs/dev` looks up by name; the mailer still has no dev
-  root (its local loop is Docker + Mailpit).
+  own state key. `dev` holds **auth alone** — the pool every developer
+  machine signs in against, which each machine's insolvia `infra/envs/dev`
+  reads through SSM; the mailer still has no dev root (its local loop is
+  Docker + Mailpit).
 - **Terraform `>= 1.10`** (native S3 state locking via `use_lockfile`; no
   DynamoDB lock table), AWS provider `~> 6.37` in every root. The floor is the
   insolvia repo's, kept identical so both repos run one provider line against
@@ -110,8 +111,10 @@ aren't working.
   gone, every row insolvia keys on a subject orphaned); a new client is a new
   id every consumer verifies. Prod's pool also has deletion protection.
   Several `aws_cognito_user_pool` arguments are ForceNew — read the plan.
-- **Auth's names are a contract with insolvia.** `modules/auth/main.tf`'s
-  header lists them; insolvia finds the pool and its clients by name. Pool
+- **Auth's SSM parameters are a contract with insolvia.**
+  `contract.tf` lists the SSM parameters insolvia reads — keys and value
+  shapes are an interface, changed here first and released before insolvia
+  reads a new one. Pool
   configuration — callback origins (staging's `http://localhost:3000` is one
   half of a contract with insolvia's Expo dev server), custom domains, the SES
   sender, deletion protection — is set here. The clients' managed-login

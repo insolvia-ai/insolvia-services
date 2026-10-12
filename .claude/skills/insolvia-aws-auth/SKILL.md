@@ -6,7 +6,7 @@ description: >-
   are about to run — or are debugging — anything that touches AWS from a
   developer machine: `terraform plan/apply` against any `infra/envs/*`,
   `docker` build/push to ECR, `scripts/apply-ci-trust.sh`,
-  `scripts/apply-account-access.sh`, `scripts/migrate-module-state.sh`, `scripts/dev-aws-auth.sh`, `aws`
+  `scripts/apply-account-access.sh`, `scripts/migrate-module-state.sh`, `scripts/apply-dev-auth.sh`, `aws`
   CLI calls, or any local step that needs Insolvia's AWS account. Trigger it
   the moment you see a credential error —
   "No valid credential sources found", "no EC2 IMDS role found", "refreshed,

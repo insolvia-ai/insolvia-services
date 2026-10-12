@@ -33,8 +33,8 @@ variable "web_origins" {
 #
 # Dev is deliberately excluded rather than overlooked. A custom domain takes
 # 15-20 minutes to create and the same to delete, needs a DNS record, and is
-# per-pool — so a per-developer-machine one would mean a quarter-hour added to
-# every `dev-aws-setup.sh` and a Route53 record per machine. The prefix domain
+# per-pool — a quarter-hour of Cognito-managed CloudFront for a page only
+# developers load, on the shared dev pool. The prefix domain
 # is fully functional; only the address bar differs.
 #
 # One label only: the shared certificate is `*.insolvia.ai`, which covers

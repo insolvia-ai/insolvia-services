@@ -87,7 +87,7 @@ date field, no calendar (0.5.0)`.
   including "prod's table has never been created, so nothing to migrate".
   Here "local" is the mailer's Docker + Mailpit stack, an offline
   `terraform validate`, and — for anything touching `modules/auth` — a
-  developer's own pool in `infra/envs/dev` (`scripts/dev-aws-auth.sh`).
+  plan of the shared dev pool in `infra/envs/dev` (`scripts/apply-dev-auth.sh`).
 - **The other repository.** If the change is half of a cross-repo pair — a new
   ECR repository for an insolvia service, a mailer contract change, a
   `ci-trust` grant an insolvia deploy needs — link the insolvia PR and say

@@ -58,7 +58,7 @@ output "mailer_alarms_topic_arn" {
 
 # ── Auth ────────────────────────────────────────────────────────
 # For humans and for this repo's own tooling — NOT for insolvia, which looks
-# the same values up by name (its modules/auth) and keeps auth_* outputs of
+# the same values from the SSM contract (modules/auth/contract.tf) and keeps auth_* outputs of
 # the same names for its deploy workflows. The pool ARN is what ci-trust's
 # staging seed role is scoped to (infra/envs/ci-trust/variables.tf).
 

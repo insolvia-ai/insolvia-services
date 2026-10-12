@@ -54,13 +54,17 @@ address, by [`state-migration.md`](../runbooks/state-migration.md), and auth
 (the Cognito pools and their app clients) by
 [`auth-state-migration.md`](../runbooks/auth-state-migration.md).
 
-**`dev` is per developer machine and holds auth alone** — that machine's
-Cognito pool, at `insolvia-services/dev/<account-id>/<machine-id>/…`, applied
-by `scripts/dev-aws-auth.sh` (insolvia's `scripts/dev-aws-setup.sh` runs it
-before its own dev root, which looks the pool up by name). The machine
-identity is insolvia's: `~/.config/insolvia/machine-id`. Auth has a dev root
-and the mailer does not because the mailer has a local stand-in (Docker +
-Mailpit, `services/mailer/scripts/dev-up.sh`) and Cognito has none.
+**`dev` holds auth alone: the ONE shared development pool**
+(`insolvia-dev-users`, at `insolvia-services/dev/terraform.tfstate`) that every
+developer machine signs in against, applied by a human with
+`scripts/apply-dev-auth.sh`. Each machine's insolvia `infra/envs/dev` reads it
+through the SSM contract, exactly as staging and prod do; only identities are
+shared, every machine's tables stay its own. Shared rather than per machine
+for humbugg's reason — a federated identity provider registers one exact
+redirect URI per hosted domain — and because a per-machine pool would make
+insolvia's local setup apply this repository. Auth has a dev root and the
+mailer does not because the mailer has a local stand-in (Docker + Mailpit) and
+Cognito has none.
 
 ## References across layers and across repos — by name, never by state
 
@@ -103,18 +107,18 @@ between the repos was already a set of names. Four cross it:
   write the mailer's URL into the API's SSM namespace, *constructed* from the
   same hostname this repo's `mailer_subdomain` serves. A hostname change is
   therefore a change in both repos.
-- **Auth → insolvia.** insolvia's `modules/auth` looks up
-  `insolvia-<env>-users` (`data "aws_cognito_user_pools"`, which must find
-  exactly one) and its clients by name (`data "aws_cognito_user_pool_clients"`:
-  `-app`, `-portal`, every `-mcp-<harness>`). It turns them into the same
-  outputs, SSM parameters and `auth_*` env outputs it had when it owned the
-  pool. It also owns the two things that are the consumer's: the clients'
+- **Auth → insolvia, through SSM.** `modules/auth/contract.tf` publishes
+  `/insolvia/<env>/auth/{user-pool-id,user-pool-arn,client-id,portal-client-id,domain,issuer-url,mcp-client-ids}`
+  and insolvia's `modules/auth_contract` reads them (`data "aws_ssm_parameter"`)
+  — the pattern humbugg uses for its shared dev pool. A missing parameter
+  fails insolvia's plan with the parameter's name. insolvia turns them into
+  the same outputs, SSM parameters and `auth_*` env outputs it had when it
+  owned the pool. It also owns the two things that are the consumer's: the clients'
   managed-login **branding**, generated from its brand, and the
   `AdminCreateUser` **grants** on its own roles. That is why this repo never
   needs an insolvia role name for auth, and why a fresh account's only
   cycle is the mailer's (`aws-bootstrap.md` § 8). The pool configuration and
-  the names themselves are this repo's: `modules/auth/main.tf` lists the
-  contract.
+  the contract's keys are this repo's.
 
 Root [`CLAUDE.md`](../../CLAUDE.md#two-repositories) states the ordering each
 of these imposes.
