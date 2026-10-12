@@ -23,7 +23,7 @@ modules/              mailer · email · dev_fixtures
 | `shared` | `insolvia/shared/terraform.tfstate` | CI — the first leg of `release.yml` |
 | `staging` | `insolvia-services/staging/terraform.tfstate` | CI — `mailer-staging.yml`, on merge |
 | `prod` | `insolvia-services/prod/terraform.tfstate` | CI — `mailer-prod.yml`, after the release's approval |
-| `dev` | `insolvia-services/dev/<account-id>/<machine-id>/terraform.tfstate` (one per developer machine) | the developer — `scripts/dev-aws-auth.sh`, run by insolvia's `dev-aws-setup.sh` |
+| `dev` | `insolvia-services/dev/terraform.tfstate` — the ONE shared development pool | a human — `scripts/apply-dev-auth.sh`, when its configuration changes |
 
 The three account-wide roots kept the keys they had in the insolvia repo —
 moving them was a code move, not a state move. `staging` and `prod` are new
@@ -36,7 +36,7 @@ insolvia repo's app stacks.
 
 `ci-trust` (human) → `shared` → `staging` / `prod` here → then the insolvia
 repo's roots, which look up `shared`'s zone, cert and repositories, and this
-repo's user pool and clients, by name. In a fresh account the mailer in
+repo's user pool and clients (through the `/insolvia/<env>/auth/*` SSM contract). In a fresh account the mailer in
 `staging`/`prod` cannot plan until insolvia's API role exists, so the first
 apply here targets `module.auth` alone — `docs/runbooks/aws-bootstrap.md`.
 The mailer roots in turn need insolvia's API to exist in that environment

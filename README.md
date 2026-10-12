@@ -18,7 +18,7 @@ This repository was cut from
 | `infra/envs/ci-trust` — the GitHub OIDC provider and the one deploy role both repos use | The app's backend: `services/api`, `admin`, `mcp`, `filing`, `insolvia_core` |
 | `infra/envs/account-access` — the human IAM users and groups | Every app stack: `infra/envs/dev`, `staging`, `prod` |
 | `services/mailer`, and its staging/prod stacks in `infra/envs/staging` and `infra/envs/prod` | Decision records (`docs/adr/`), the product plan, seeds and fixtures |
-| `infra/modules/auth` — the Cognito user pools, hosted domains and app clients, in `staging`, `prod` and a per-machine `dev` root ([ADR 0026](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0026-auth-is-a-shared-service.md)) | The sign-in page's branding and the API's invite grants (insolvia's `modules/auth`, which finds the pool by name) |
+| `infra/modules/auth` — the Cognito user pools, hosted domains and app clients, in `staging`, `prod` and one shared `dev` root ([ADR 0026](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0026-auth-is-a-shared-service.md)) | The sign-in page's branding and the API's invite grants (insolvia's `modules/auth`, which reads the pool's SSM contract) |
 
 The two repos deploy into one AWS account and find each other's resources by
 name — never by reading each other's Terraform state. The rules that follow

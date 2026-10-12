@@ -35,8 +35,8 @@ jobs:
         # checks ARE required — a broken trust anchor is found at review, not
         # at the next human apply.
         #
-        # `dev` is the per-machine auth root (a developer's own Cognito pool,
-        # applied by scripts/dev-aws-auth.sh — never by CI). Validated like
+        # `dev` is the shared development pool (applied by a human with
+        # scripts/apply-dev-auth.sh — never by CI). Validated like
         # the rest; the mailer still has no dev root (Docker + Mailpit).
         env: [shared, staging, prod, dev, ci-trust, account-access]
     steps:

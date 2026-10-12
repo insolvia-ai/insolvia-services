@@ -111,9 +111,8 @@ All three are human-run, each through its own guarded script:
   [`docs/runbooks/auth-state-migration.md`](../../../docs/runbooks/auth-state-migration.md)
   (auth), which freeze the release pipelines around them. They move state;
   they create and destroy nothing. `--rehearse` is read-only and always fine.
-- **A developer's own Cognito pool** — `infra/envs/dev`, per machine, applied
-  by `scripts/dev-aws-auth.sh` (normally run by insolvia's
-  `scripts/dev-aws-setup.sh`). Never CI, never shared.
+- **The shared development pool** — `infra/envs/dev`, applied by a human with
+  `scripts/apply-dev-auth.sh` when its configuration changes. Never CI.
 
 The mailer still has no per-developer AWS environment — its local loop is
 Docker + Mailpit (`services/mailer/scripts/dev-up.sh`). The rest of the

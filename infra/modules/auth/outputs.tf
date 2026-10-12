@@ -1,8 +1,8 @@
 # These outputs are this ROOT's view, and what the env roots here republish
 # as auth_* outputs (for humans, and for the ci-trust seed role's pool ARN).
-# The insolvia repo does NOT read them — it looks the same values up by name
-# (its modules/auth), and keeps auth_* outputs of the same names for its own
-# deploy workflows. Same values, two derivations, one source: AWS.
+# The insolvia repo does NOT read them — it reads the SSM contract
+# (contract.tf), and keeps auth_* outputs of the same names for its own
+# deploy workflows.
 
 output "user_pool_id" {
   description = "Cognito user pool ID."
@@ -38,11 +38,7 @@ output "portal_client_id" {
 # app's next deploy picks this up.
 output "domain" {
   description = "Hostname serving /oauth2/authorize, /oauth2/token and the sign-in pages — the custom domain where configured, otherwise the Cognito prefix domain."
-  value = (
-    var.custom_domain == null
-    ? "${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com"
-    : var.custom_domain
-  )
+  value       = local.domain
 }
 
 # The prefix domain specifically, which keeps serving after a custom domain is
@@ -62,7 +58,7 @@ output "issuer_url" {
 
 # The MCP service's client-id allowlist (#261), derived from the registered
 # harness clients so registering a harness IS adding it to the allowlist —
-# insolvia publishes the same set (looked up by name prefix) as
+# insolvia publishes the same set (from the mcp-client-ids contract parameter) as
 # /insolvia/<env>/mcp/auth-client-ids and its deploy workflow derives
 # AUTH_CLIENT_IDS from it. A map too, for anything
 # that needs to name one harness's client (the E2E, a directory listing).

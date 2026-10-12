@@ -33,10 +33,10 @@ touching them. Detail lives in the linked file, not here.
 
 ```
 services/mailer/   the mailer: SigV4 HTTP API → SQS → SES, Python on Lambda (+ Mailpit locally)
-infra/envs/        shared · ci-trust · account-access (account-wide) · staging · prod (mailer + auth) · dev (per-machine auth)
+infra/envs/        shared · ci-trust · account-access (account-wide) · staging · prod (mailer + auth) · dev (the shared development pool)
 infra/modules/     mailer · auth (Cognito pool, domains, app clients) · email (SES identity + mail DNS) · dev_fixtures (the seed-fixture bucket)
 .github/           release.yml (shared → mailer staging → promote → mailer prod) · PR gates · actions
-scripts/           dev-setup.sh · dev-aws-auth.sh · apply-ci-trust.sh · apply-account-access.sh · update-ruleset.sh · migrate-module-state.sh
+scripts/           dev-setup.sh · apply-dev-auth.sh · apply-ci-trust.sh · apply-account-access.sh · update-ruleset.sh · migrate-module-state.sh
 docs/              reference/ · runbooks/ — index in docs/README.md
 ```
 
@@ -63,7 +63,7 @@ each is an ordering rule:
 | zone `insolvia.ai`, cert `*.insolvia.ai`, `insolvia-shared-<service>` ECR repos | this repo's `infra/envs/shared` | insolvia's env roots, via `data` lookups | A **new insolvia service's ECR repository is added here first**, and must merge *and release* before the insolvia PR that deploys it — that PR's plan fails until it exists. |
 | `insolvia-<env>-api-role` | insolvia's `modules/api_service` | this repo's `infra/envs/{staging,prod}` (`data "aws_iam_role" "api"`), which also attach the mailer's invoke policy *onto* it | The mailer cannot plan in an environment where insolvia's API has never applied; renaming the role there breaks this plan here (loudly, by design); replacing it drops the invoke grant until the mailer re-applies. |
 | the mailer's hostname (`staging-mailer-api.insolvia.ai`, `mailer-api.insolvia.ai`) | this repo (`mailer_subdomain`) | insolvia, which **constructs** `MAILER_API_URL` from the same hostname | Changing a mailer hostname is a two-repo change: here, then insolvia's API configuration. |
-| the pool `insolvia-<env>-users` and its clients `insolvia-<env>-app`, `-portal`, `-mcp-<harness>` | this repo's `modules/auth`, in `infra/envs/{dev,staging,prod}` | insolvia's `modules/auth` (`data "aws_cognito_user_pools"` / `"aws_cognito_user_pool_clients"`), which also owns the clients' **branding** and its roles' **invite grants** | This root applies **before** insolvia's (its lookups need the pool). A new client insolvia must read is added here first and released before the insolvia PR that reads it. A rename or a second pool of the same name fails insolvia's plan. A pool or client is **never** recreated — see `modules/auth/main.tf`. |
+| the auth contract: SSM `/insolvia/<env>/auth/*` (pool id/ARN, web and portal client ids, sign-in domain, issuer, MCP client ids) | this repo's `modules/auth` (`contract.tf`), in `infra/envs/{dev,staging,prod}` | insolvia's `modules/auth_contract` (`data "aws_ssm_parameter"`); its `modules/auth` also owns the clients' **branding** and its roles' **invite grants** | This root applies **before** insolvia's (its reads need the parameters; a missing one fails insolvia's plan by name). A new client or key insolvia must read is added here first and released before the insolvia PR that reads it. A pool or client is **never** recreated — see `modules/auth/main.tf`. |
 
 The trust anchor is here too: an `AccessDenied` in **either** repo's deploy
 is fixed by a PR to `infra/envs/ci-trust` in this repo plus a human apply.
@@ -84,8 +84,8 @@ is fixed by a PR to `infra/envs/ci-trust` in this repo plus a human apply.
 | mail DNS, SES, Google Workspace | [`docs/reference/email.md`](docs/reference/email.md) |
 | standing up a fresh account (spans both repos) | [`docs/runbooks/aws-bootstrap.md`](docs/runbooks/aws-bootstrap.md) |
 | the 2026-10-11 cutover: moving the mailer's state out of insolvia | [`docs/runbooks/state-migration.md`](docs/runbooks/state-migration.md) — run `scripts/migrate-module-state.sh` only from a runbook |
-| moving auth's state out of insolvia (staging, prod, each developer machine) | [`docs/runbooks/auth-state-migration.md`](docs/runbooks/auth-state-migration.md) |
-| a developer's own Cognito pool (`infra/envs/dev`) | `scripts/dev-aws-auth.sh` — normally run for you by insolvia's `scripts/dev-aws-setup.sh` |
+| moving auth's state out of insolvia (staging, prod) | [`docs/runbooks/auth-state-migration.md`](docs/runbooks/auth-state-migration.md) |
+| the shared development pool (`infra/envs/dev`) | `scripts/apply-dev-auth.sh` — human-run, when its configuration changes; developers only read it |
 | adding/removing a human IAM user, or rotating MFA | [`infra/envs/account-access/`](infra/envs/account-access/main.tf) · [`docs/runbooks/iam-mfa-rotation.md`](docs/runbooks/iam-mfa-rotation.md) |
 | SES production access | [`docs/runbooks/ses-production-access.md`](docs/runbooks/ses-production-access.md) |
 | registering a new mailer caller | [`services/mailer/docs/onboarding.md`](services/mailer/docs/onboarding.md) |

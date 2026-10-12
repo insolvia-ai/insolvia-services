@@ -116,7 +116,7 @@ jobs:
       # docs/runbooks/auth-state-migration.md. Applying then would create a
       # SECOND mailer (colliding on every fixed name) or a second user pool
       # (Cognito does not make pool names unique, so that one would succeed
-      # and leave insolvia's by-name lookup ambiguous).
+      # and its SSM contract parameters would collide with the live ones).
       - name: Refuse to apply onto a state missing a module
         env:
           BOOTSTRAP: ${{ inputs.bootstrap }}
