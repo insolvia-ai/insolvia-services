@@ -117,9 +117,11 @@ aren't working.
   reads a new one. Pool
   configuration — callback origins (staging's `http://localhost:3000` is one
   half of a contract with insolvia's Expo dev server), custom domains, the SES
-  sender, deletion protection — is set here. The clients' managed-login
-  **branding** and the `AdminCreateUser` **grants** are insolvia's (ADR 0026),
-  so neither appears in this repo.
+  sender, deletion protection — is set here, and so is the sign-in page's
+  **style** (`modules/auth/branding.tf`: the settings document and three SVGs
+  beside it are checked in and hand-maintained until the design system
+  renders them). The `AdminCreateUser` **grants** are insolvia's (ADR 0026),
+  so they do not appear in this repo.
 - **Before a large or risky change, look at a real plan.** `infra-pr.yml`
   only validates offline (`init -backend=false`): it catches syntax and type
   errors but never shows what a change would *do*, and there is no plan-mode

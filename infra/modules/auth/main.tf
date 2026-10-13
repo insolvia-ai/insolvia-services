@@ -11,15 +11,14 @@
 # module.auth.* — so the state moved and nothing was recreated
 # (docs/runbooks/auth-state-migration.md).
 #
-# WHAT THIS MODULE DOES NOT OWN, and where it went. Both stayed in the insolvia
-# repo's modules/auth, at their old addresses, because they are the
-# CONSUMER's, not the service's:
-#   • the managed-login branding styles (aws_cognito_managed_login_branding) —
-#     generated from insolvia's brand by its `npm run tokens`, per app client;
-#   • the AdminCreateUser grants on insolvia's API and admin Lambda roles —
-#     a consumer grants its own role access to this pool, so this module never
-#     needs a consumer's role name, and a fresh account has no cycle between
-#     this root and insolvia's.
+# THE SIGN-IN PAGE'S STYLE IS HERE TOO (branding.tf): it is the login
+# service's face. It came over from the insolvia repo on 2026-10-12, adopted
+# by `import` blocks in each env root rather than a state move.
+#
+# WHAT THIS MODULE DOES NOT OWN: the AdminCreateUser grants on insolvia's API
+# and admin Lambda roles. A consumer grants its own role access to this pool
+# (insolvia's modules/auth), so this module never needs a consumer's role
+# name, and a fresh account has no cycle between this root and insolvia's.
 #
 # THE SSM PARAMETERS ARE THE CONTRACT. insolvia reads /insolvia/<env>/auth/*
 # (published by contract.tf) — never this module's state, and
@@ -224,9 +223,8 @@ resource "aws_cognito_user_pool" "main" {
 # and needs a CI-role IAM change first: Cognito provisions its own CloudFront
 # distribution with the CALLER's credentials, so the deploy role would need
 # cloudfront:UpdateDistribution, and that grant can only be applied by a human
-# (see the insolvia-deploy-role-permissions skill). Branding — the consumer's,
-# not this module's — needs neither DNS nor new IAM and works on this prefix
-# domain today.
+# (see the insolvia-deploy-role-permissions skill). Branding (branding.tf)
+# needs neither DNS nor new IAM and works on the prefix domain too.
 #
 # managed_login_version = 2 selects MANAGED LOGIN over the classic hosted UI.
 # AWS calls the classic UI "a first-generation version of the managed login
@@ -249,25 +247,21 @@ resource "aws_cognito_user_pool_domain" "main" {
   user_pool_id          = aws_cognito_user_pool.main.id
   managed_login_version = 2
 
-  # NO depends_on the branding any more, and that is a real loss, so it is
-  # written down. Until 2026-10-11 this resource depended on the two
-  # aws_cognito_managed_login_branding styles, which made "managed login is on
-  # but has nothing to render" unreachable: a client on managed login with no
-  # style does not fall back to defaults, it serves "Login pages unavailable.
-  # Please contact an administrator." That is exactly how staging once broke.
+  # Order the branding style BEFORE this flips to managed login. Nothing in the
+  # attribute references would do it — the branding hangs off the app client,
+  # not the domain — so without this the two are independent and Terraform may
+  # do them in either order.
   #
-  # The styles now belong to the CONSUMER (the insolvia repo's modules/auth,
-  # beside the generator that renders them from its brand — insolvia ADR 0026),
-  # and a depends_on cannot cross a repository. What is left of the guarantee:
-  #   • steady state is unaffected — every live client already has its style,
-  #     and nothing here touches one;
-  #   • a FRESH pool (a new environment, the shared dev pool's first apply) serves the
-  #     "unavailable" page between this apply and the consumer's, which in
-  #     every one of those cases is an environment nobody is signed in to yet.
-  #     for dev, insolvia's scripts/dev-aws-setup.sh brands the shared pool;
-  #   • a REPLACED client loses its style the same way — and a planned
-  #     replacement of any client here is already a hard stop (see the
-  #     header), because it also changes the id every consumer verifies.
+  # It matters because the failure is an outage, not a cosmetic gap: a client
+  # on managed login with no branding style does not fall back to defaults, it
+  # serves "Login pages unavailable. Please contact an administrator." and
+  # sign-in is simply down. That is exactly how staging once broke. (For the
+  # day of the move the styles lived in the insolvia repo and this guarantee
+  # was lost; branding.tf brings it back.)
+  depends_on = [
+    aws_cognito_managed_login_branding.web,
+    aws_cognito_managed_login_branding.portal,
+  ]
 }
 
 # ── Custom auth domain (staging, prod) ──────────────────────────
@@ -301,7 +295,11 @@ resource "aws_cognito_user_pool_domain" "custom" {
   certificate_arn       = var.certificate_arn
   managed_login_version = 2
 
-  # The prefix domain's note on the branding order applies here unchanged.
+  # Same ordering rule as the prefix domain above.
+  depends_on = [
+    aws_cognito_managed_login_branding.web,
+    aws_cognito_managed_login_branding.portal,
+  ]
 }
 
 # Cognito creates its own CloudFront distribution for the custom domain and

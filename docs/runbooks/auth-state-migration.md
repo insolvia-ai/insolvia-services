@@ -1,5 +1,9 @@
 # Cutover: auth (Cognito) leaves the insolvia repo
 
+**Later the same day:** the two branding styles that this move left in
+insolvia moved here too (insolvia ADR 0026, amendment) — by `import` blocks
+in this repo and `removed { destroy = false }` there, not by this script.
+
 **Status: executed 2026-10-12** by the maintainer (andreas.savva), staging and
 prod. Backups, on the machine that ran it:
 `~/.local/state/insolvia/state-migration/staging-auth-20261012T161532Z` and
