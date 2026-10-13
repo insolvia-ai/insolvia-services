@@ -114,12 +114,12 @@ between the repos was already a set of names. Four cross it:
   — the pattern humbugg uses for its shared dev pool. A missing parameter
   fails insolvia's plan with the parameter's name. insolvia turns them into
   the same outputs, SSM parameters and `auth_*` env outputs it had when it
-  owned the pool. It also owns the two things that are the consumer's: the clients'
-  managed-login **branding**, generated from its brand, and the
+  owned the pool. It also owns the one thing that is the consumer's: the
   `AdminCreateUser` **grants** on its own roles. That is why this repo never
   needs an insolvia role name for auth, and why a fresh account's only
-  cycle is the mailer's (`aws-bootstrap.md` § 8). The pool configuration and
-  the contract's keys are this repo's.
+  cycle is the mailer's (`aws-bootstrap.md` § 8). The pool configuration, the
+  sign-in page's style (`modules/auth/branding.tf`, since the ADR 0026
+  amendment) and the contract's keys are this repo's.
 
 Root [`CLAUDE.md`](../../CLAUDE.md#two-repositories) states the ordering each
 of these imposes.

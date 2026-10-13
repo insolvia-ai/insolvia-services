@@ -22,11 +22,9 @@
 # Per-machine tables still hold per-machine data. And nothing per machine may
 # delete pool users — they are not one machine's to delete.
 #
-# The managed-login BRANDING of this pool's two app clients is the insolvia
-# repo's (its infra/envs/dev-shared, applied by its scripts/dev-aws-setup.sh),
-# for the reason the branding is insolvia's everywhere: it is generated from
-# insolvia's brand. Until that has applied once, this pool's sign-in page says
-# "Login pages unavailable".
+# The sign-in page's style (the managed-login branding of the two app clients)
+# is part of the module, as on staging and prod — adopted from the insolvia
+# repo's retiring infra/envs/dev-shared by the import blocks at the bottom.
 
 locals {
   environment = "dev"
@@ -92,4 +90,26 @@ module "auth" {
   deletion_protection = false
 
   tags = local.common_tags
+}
+
+# ── Adopting the sign-in page's style (2026-10-12) ──────────────
+# The managed-login branding of this pool's two app clients moved here from
+# the insolvia repo's infra/envs/dev-shared (insolvia ADR 0026, amended): it is
+# auth's, so it lives with the pool. These blocks ADOPT the live styles
+# rather than creating new ones — Cognito allows one style per client and
+# rejects a second (ManagedLoginBrandingExistsException), and a create would
+# have needed the old one deleted first, taking sign-in down in between. The
+# insolvia side lets go with `removed { destroy = false }`; either side may
+# apply first.
+#
+# Id format: <user pool id>,<managed login branding id>. Idempotent once
+# applied; delete these blocks after this root has applied them.
+import {
+  to = module.auth.aws_cognito_managed_login_branding.web
+  id = "us-east-1_Om3HJ6JUk,e028c193-c92b-4aa5-ba6a-e58b42e6f405"
+}
+
+import {
+  to = module.auth.aws_cognito_managed_login_branding.portal
+  id = "us-east-1_Om3HJ6JUk,e62c48cc-92f0-4cb7-b627-51d27c9b35e3"
 }
