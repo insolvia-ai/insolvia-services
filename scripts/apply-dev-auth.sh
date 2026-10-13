@@ -73,14 +73,13 @@ if [[ -n "$hits" ]]; then
 fi
 
 echo
-warn "Review the plan above. The first apply creates insolvia-dev-users, its"
-warn "prefix domain, dev-auth.insolvia.ai (15-20 minutes: Cognito provisions"
-warn "CloudFront), its clients and the /insolvia/dev/auth/* parameters. After"
-warn "that, expect in-place updates only."
+warn "Review the plan above. A first apply in a fresh account creates"
+warn "insolvia-dev-users, its prefix domain, dev-auth.insolvia.ai (15-20 minutes:"
+warn "Cognito provisions CloudFront), its clients, their sign-in page styles and"
+warn "the /insolvia/dev/auth/* parameters. After that, expect in-place updates only."
 read -r -p "Apply this plan? [y/N] " reply
 [[ "$reply" == [yY] ]] || die "aborted — nothing applied"
 
 # ── Apply ──────────────────────────────────────────────────────────
 terraform -chdir="$TF_DIR" apply -input=false "$WORK/dev.tfplan"
 ok "Shared dev pool applied: $(terraform -chdir="$TF_DIR" output -raw auth_user_pool_id) ($(terraform -chdir="$TF_DIR" output -raw auth_domain))."
-ok "Its sign-in page renders once the insolvia repo's dev-shared branding has applied (its scripts/dev-aws-setup.sh does that)."
