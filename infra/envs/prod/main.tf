@@ -138,25 +138,3 @@ module "auth" {
 
   tags = local.common_tags
 }
-
-# ── Adopting the sign-in page's style (2026-10-12) ──────────────
-# The managed-login branding of this pool's two app clients moved here from
-# the insolvia repo's infra/envs/prod (insolvia ADR 0026, amended): it is
-# auth's, so it lives with the pool. These blocks ADOPT the live styles
-# rather than creating new ones — Cognito allows one style per client and
-# rejects a second (ManagedLoginBrandingExistsException), and a create would
-# have needed the old one deleted first, taking sign-in down in between. The
-# insolvia side lets go with `removed { destroy = false }`; either side may
-# apply first.
-#
-# Id format: <user pool id>,<managed login branding id>. Idempotent once
-# applied; delete these blocks after this root has applied them.
-import {
-  to = module.auth.aws_cognito_managed_login_branding.web
-  id = "us-east-1_7xOAV4q6x,be20780f-e729-4c6e-9c6f-ad7596125ffb"
-}
-
-import {
-  to = module.auth.aws_cognito_managed_login_branding.portal
-  id = "us-east-1_7xOAV4q6x,af76a112-4a57-409e-9d13-6632106e9c74"
-}
