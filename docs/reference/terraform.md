@@ -37,9 +37,9 @@ infra/
 
 | Root | State key (`s3://insolvia-shared-terraform-state-us-east-1/…`) | Owns | Applied by |
 |---|---|---|---|
-| ci-trust | `insolvia/ci-trust/terraform.tfstate` | The OIDC provider, the deploy role and its policy, the staging seed role | a human only (below) |
+| ci-trust | `insolvia/ci-trust/terraform.tfstate` | The OIDC provider, the deploy role and its policies (one inline, plus the managed `insolvia-shared-deploy-{network,database}` — the inline one is at IAM's size cap), the staging seed role | a human only (below) |
 | account-access | `insolvia/account-access/terraform.tfstate` | Human IAM users, their groups, the policies attached to them | a human only; CI *cannot* (below) |
-| shared | `insolvia/shared/terraform.tfstate` | Zone, wildcard cert, SES identity + mail DNS, the container repositories (`insolvia-shared-{api,admin-api,jobs,marketing,mailer,mcp,filing}`), the seed-fixture bucket `insolvia-shared-dev-fixtures-us-east-1` | CI, first leg of `release.yml` |
+| shared | `insolvia/shared/terraform.tfstate` | Zone, wildcard cert, SES identity + mail DNS, the container repositories (`insolvia-shared-{api,admin-api,jobs,marketing,mailer,mcp,filing}`, and insolvia ADR 0028's `insolvia-shared-{api,worker,admin-api,mcp,filing,migrator}-dotnet`), the seed-fixture bucket `insolvia-shared-dev-fixtures-us-east-1` | CI, first leg of `release.yml` |
 | staging | `insolvia-services/staging/terraform.tfstate` | The staging mailer | CI, `mailer-staging.yml` |
 | prod | `insolvia-services/prod/terraform.tfstate` | The production mailer | CI, `mailer-prod.yml` behind the release's approval |
 

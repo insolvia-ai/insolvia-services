@@ -973,6 +973,14 @@ data "aws_iam_policy_document" "github_permissions" {
   # wildcard sits in the MIDDLE — `alias/insolvia-*-cases`, not a prefix match.
   # Renaming there without renaming here silently stops the deny matching, which
   # is why it is spelled out.
+  #
+  # THE DATABASE KEY TOO (insolvia ADR 0028). When the case data moves from
+  # DynamoDB to Aurora, `alias/insolvia-<env>-db` (modules/aurora's
+  # `alias/${local.name}`, name "insolvia-<env>-db") protects the same SSNs the
+  # case key does today — the cluster's storage, its backups and snapshots. The
+  # pipeline needs only CreateGrant and DescribeKey on it to create an encrypted
+  # cluster (EncryptionKeyGrants, EncryptionKeyManagement); RDS decrypts under
+  # its own grant. Same alias-laziness trade as above, same mid-string wildcard.
   statement {
     sid    = "DenyCaseDataDecryption"
     effect = "Deny"
@@ -995,7 +1003,7 @@ data "aws_iam_policy_document" "github_permissions" {
       # Same widening argument as DenyAuditLogErasure: the second entry is
       # TRANSITIONAL, and covering both spellings is the safe direction for a
       # deny. Remove it with the rest once both environments have applied.
-      values = ["alias/insolvia-*-cases", "alias/insolvia-cases-*"]
+      values = ["alias/insolvia-*-cases", "alias/insolvia-cases-*", "alias/insolvia-*-db"]
     }
   }
 
@@ -1093,6 +1101,468 @@ resource "aws_iam_role_policy" "github_permissions" {
   role   = aws_iam_role.github_actions.id
   policy = data.aws_iam_policy_document.github_permissions.json
 }
+
+# ── Network and database: insolvia ADR 0028 (plan 18.5) ─────────
+# The deploy role's grants for insolvia's modules/network and modules/aurora,
+# in two CUSTOMER-MANAGED policies attached to the role rather than in the
+# inline document above — because that document is full.
+#
+# WHY NOT INLINE. IAM caps a role's inline policies at 10,240 characters in
+# total (whitespace not counted), and github_permissions already rendered to
+# 10,024 before this change; these statements add about 5,600. A managed
+# policy has its own 6,144-character cap and a role can hold ten of them, so
+# the split is one per module, each well under its cap, leaving room in both
+# for the next grant. The inline document keeps everything it had, and keeps
+# the ONE edit this change makes to an existing statement
+# (DenyCaseDataDecryption's alias/insolvia-*-db) — the case-data deny stays in
+# one place, whatever store the data lives in.
+#
+# AN EXPLICIT DENY IN ANY ATTACHED POLICY BINDS THE ROLE, so the denies here
+# (DenyDatabaseMasterSecretRead, DenyDeployPolicyMutation) are as strong as the
+# inline ones. And these policies cannot become the self-escalation path the
+# inline one is guarded against: the role holds no iam:*Policy* verb at all,
+# DenySelfPrivilegeEscalation already forbids Attach/DetachRolePolicy on the
+# role, and DenyDeployPolicyMutation forbids writing a new version of either
+# policy — the managed-policy form of PutRolePolicy.
+#
+# WHAT THE MODULES ARE: modules/network is one VPC per environment (two
+# private subnets, one public subnet holding a fck-nat instance, S3 and
+# DynamoDB gateway endpoints); modules/aurora is Serverless v2 PostgreSQL
+# under its own key, its master password held by RDS in Secrets Manager.
+#
+# WHAT IS ALREADY HELD, in the inline document, and so not repeated here: the
+# database key and its alias (EncryptionKeyCreate, EncryptionKeyManagement,
+# EncryptionKeyAliases — alias/insolvia*), the grant RDS makes on that key at
+# cluster creation (EncryptionKeyGrants, fenced by kms:GrantIsForAWSResource),
+# the NAT's recover alarm (Alarms, on "*"), and the /insolvia/<env>/db/*
+# parameters (Parameters, ssm:* on parameter/insolvia/*; they are plain
+# Strings, so ParameterEncryption is not even exercised).
+#
+# EC2 CANNOT BE NAME-FENCED. VPCs, subnets, instances and the rest are
+# arn:…:vpc/vpc-<random>; their Name is a tag, not a name. So the fence is
+# the Project tag the modules set on everything they create
+# (local.common_tags → var.tags): a create must CARRY Project=insolvia
+# (aws:RequestTag), and every later call must TARGET a resource that has it
+# (aws:ResourceTag). Unlike KMS (see EncryptionKeyCreate), EC2 evaluates
+# tags applied at create synchronously, so the follow-up calls Terraform
+# makes milliseconds later (ModifyVpcAttribute, AttachInternetGateway) see
+# them. The failure direction is closed: a resource created without the tag
+# cannot be created at all, rather than created and then stranded.
+#
+# The fence is the tag, and the tag is writable — by this role, on its own
+# resources (NetworkManagement carries CreateTags/DeleteTags). What it cannot
+# do is ADD Project=insolvia to a resource that lacks it — insolvia's network
+# module deliberately does not adopt the VPC's default security group, so no
+# exception is needed. It cannot reach the default VPC, or anything a human
+# builds by hand, through these statements.
+data "aws_iam_policy_document" "github_network" {
+  statement {
+    sid = "NetworkCreate"
+    actions = [
+      "ec2:CreateVpc",
+      "ec2:CreateSubnet",
+      "ec2:CreateInternetGateway",
+      "ec2:CreateRouteTable",
+      "ec2:CreateSecurityGroup",
+      "ec2:AllocateAddress",
+      "ec2:CreateVpcEndpoint",
+    ]
+    resources = [
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:vpc/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:subnet/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:internet-gateway/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:route-table/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:security-group/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:elastic-ip/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:vpc-endpoint/*",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = ["insolvia"]
+    }
+  }
+
+  # The NAT instance. Its own statement because it carries a second fence: the
+  # instance type. The module looks the fck-nat AMI up for arm64, so only a
+  # Graviton type launches at all, and ADR 0028 chose t4g.nano. Pinning the
+  # family here is a cost guard on the one statement that can start compute
+  # billed by the hour — a pipeline that can RunInstances any type is a
+  # pipeline that can mine. Moving the NAT to another family is a human
+  # ci-trust apply first, on purpose.
+  statement {
+    sid       = "NatInstanceLaunch"
+    actions   = ["ec2:RunInstances"]
+    resources = ["arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = ["insolvia"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "ec2:InstanceType"
+      values   = ["t4g.*"]
+    }
+  }
+
+  # Resources a call TOUCHES without owning, which carry no Project tag and so
+  # cannot be tag-fenced: the AMI (fck-nat's, owned by another account), the
+  # root volume and primary network interface RunInstances creates untagged
+  # alongside the instance, and the security-group RULES (the module's
+  # aws_vpc_security_group_*_rule resources set no tags). Each action here also
+  # names a REQUIRED resource that is fenced — the instance by
+  # NatInstanceLaunch, the security group and the address by NetworkManagement
+  # — so nothing here works on its own. AssociateAddress is here for the ENI an
+  # address can be pointed at; the address itself must still be ours.
+  statement {
+    sid = "NetworkUntaggedParts"
+    actions = [
+      "ec2:RunInstances",
+      "ec2:AssociateAddress",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:ModifySecurityGroupRules",
+    ]
+    resources = [
+      "arn:aws:ec2:*::image/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:network-interface/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:security-group-rule/*",
+    ]
+  }
+
+  # Everything after create, on resources that carry Project=insolvia: the
+  # parent side of a create (CreateSubnet also authorizes against its VPC,
+  # RunInstances against its subnet and security group), attachment and
+  # routing, rules, the instance's lifecycle (stop/start is how an instance
+  # type changes), and destroy. CreateTags/DeleteTags here are for tag edits on
+  # resources already ours; the tag written AT create is NetworkTagOnCreate.
+  statement {
+    sid = "NetworkManagement"
+    actions = [
+      "ec2:CreateSubnet",
+      "ec2:CreateRouteTable",
+      "ec2:CreateSecurityGroup",
+      "ec2:CreateVpcEndpoint",
+      "ec2:RunInstances",
+      "ec2:ModifyVpcAttribute",
+      "ec2:DeleteVpc",
+      "ec2:ModifySubnetAttribute",
+      "ec2:DeleteSubnet",
+      "ec2:AttachInternetGateway",
+      "ec2:DetachInternetGateway",
+      "ec2:DeleteInternetGateway",
+      "ec2:CreateRoute",
+      "ec2:ReplaceRoute",
+      "ec2:DeleteRoute",
+      "ec2:AssociateRouteTable",
+      "ec2:DisassociateRouteTable",
+      "ec2:ReplaceRouteTableAssociation",
+      "ec2:DeleteRouteTable",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:ModifySecurityGroupRules",
+      "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+      "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+      "ec2:DeleteSecurityGroup",
+      "ec2:ModifyInstanceAttribute",
+      "ec2:ModifyInstanceMetadataOptions",
+      "ec2:StopInstances",
+      "ec2:StartInstances",
+      "ec2:TerminateInstances",
+      "ec2:AssociateAddress",
+      "ec2:DisassociateAddress",
+      "ec2:ReleaseAddress",
+      "ec2:ModifyVpcEndpoint",
+      "ec2:DeleteVpcEndpoints",
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+    ]
+    resources = [
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:vpc/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:subnet/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:internet-gateway/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:route-table/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:security-group/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:elastic-ip/*",
+      "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:vpc-endpoint/*",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = ["insolvia"]
+    }
+  }
+
+  # Tag-on-create: a create that carries TagSpecifications is also authorized
+  # as ec2:CreateTags, on the resource being created. ec2:CreateAction makes
+  # this usable ONLY inside one of those creates — never as a standalone
+  # CreateTags that stamps Project=insolvia onto something that is not ours.
+  statement {
+    sid       = "NetworkTagOnCreate"
+    actions   = ["ec2:CreateTags"]
+    resources = ["arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:*/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:CreateAction"
+      values = [
+        "CreateVpc",
+        "CreateSubnet",
+        "CreateInternetGateway",
+        "CreateRouteTable",
+        "CreateSecurityGroup",
+        "RunInstances",
+        "AllocateAddress",
+        "CreateVpcEndpoint",
+      ]
+    }
+  }
+
+  # The NAT's auto-recover alarm is the account's first alarm with an EC2
+  # ACTION, and CloudWatch performs EC2 actions through its own service-linked
+  # role (AWSServiceRoleForCloudWatchEvents), created on the caller's
+  # permissions the first time — PutMetricAlarm documents
+  # iam:CreateServiceLinkedRole as required for every alarm with an EC2 action.
+  # Same three locks; dormant once the role exists.
+  statement {
+    sid     = "AlarmActionServiceLinkedRole"
+    actions = ["iam:CreateServiceLinkedRole"]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/events.amazonaws.com/AWSServiceRoleForCloudWatchEvents",
+    ]
+
+    condition {
+      test     = "StringLike"
+      variable = "iam:AWSServiceName"
+      values   = ["events.amazonaws.com"]
+    }
+  }
+
+  # EC2's Describe calls support no resource-level permissions at all, and the
+  # provider makes a dozen per refresh (the VPC's default route table, NACL and
+  # security group, the fck-nat AMI lookup, the AZ list, instance attributes
+  # and credit specification). Read-only metadata — the EnumerationApis class.
+  statement {
+    sid       = "NetworkDescribe"
+    actions   = ["ec2:Describe*"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "github_network" {
+  name        = "insolvia-shared-deploy-network"
+  description = "CI deploy role: insolvia's modules/network (VPC, subnets, NAT instance, endpoints). See infra/envs/ci-trust/main.tf."
+  policy      = data.aws_iam_policy_document.github_network.json
+  tags        = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "github_network" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = aws_iam_policy.github_network.arn
+}
+
+data "aws_iam_policy_document" "github_database" {
+
+  # The cluster, its one instance, subnet group and parameter group, and the
+  # prod final snapshot — all named insolvia-<env>-db (instance -db-1,
+  # snapshot -db-final), so unlike EC2 this IS a name fence.
+  #
+  # ENUMERATED, NOT rds:*. The verbs left out are the ones that move data out of
+  # the cluster rather than manage it: ModifyDBClusterSnapshotAttribute (share
+  # a snapshot with another account), Copy/Restore* (a second cluster from a
+  # snapshot or a point in time), EnableHttpEndpoint (the Data API), and
+  # FailoverDBCluster/Reboot*, which Terraform never calls. rds-db:connect is a
+  # different service prefix and is not granted anywhere in this policy — the
+  # pipeline provisions the database and never logs into it (insolvia's
+  # modules/aurora: the grants are per-Lambda-role, made in the switch PR).
+  #
+  # NOT A CLOSED FENCE ON THE DATA, and saying so: ModifyDBCluster is how
+  # Terraform changes anything about the cluster, and the same verb can switch
+  # manage_master_user_password off and set a master password the caller
+  # chooses. DenyDatabaseMasterSecretRead stops the pipeline reading the
+  # password RDS generated; it cannot stop it replacing that password. Nothing
+  # in an identity policy can, short of a condition on the request's master
+  # password parameters, which is worth evaluating as a follow-up deny. Until
+  # then the controls are the trail and PR review — the same posture
+  # EncryptionKeyManagement records for kms:PutKeyPolicy. And with
+  # rds-db:connect withheld and the cluster reachable only from the Lambda
+  # security group, a password alone does not reach the database from CI.
+  statement {
+    sid = "DatabaseManagement"
+    actions = [
+      "rds:CreateDBCluster",
+      "rds:ModifyDBCluster",
+      "rds:DeleteDBCluster",
+      "rds:DescribeDBClusters",
+      "rds:CreateDBClusterSnapshot",
+      "rds:CreateDBInstance",
+      "rds:ModifyDBInstance",
+      "rds:DeleteDBInstance",
+      "rds:DescribeDBInstances",
+      "rds:CreateDBSubnetGroup",
+      "rds:ModifyDBSubnetGroup",
+      "rds:DeleteDBSubnetGroup",
+      "rds:DescribeDBSubnetGroups",
+      "rds:CreateDBClusterParameterGroup",
+      "rds:ModifyDBClusterParameterGroup",
+      "rds:ResetDBClusterParameterGroup",
+      "rds:DeleteDBClusterParameterGroup",
+      "rds:DescribeDBClusterParameterGroups",
+      "rds:DescribeDBClusterParameters",
+      "rds:AddTagsToResource",
+      "rds:RemoveTagsFromResource",
+      "rds:ListTagsForResource",
+    ]
+    resources = [
+      "arn:aws:rds:*:${data.aws_caller_identity.current.account_id}:cluster:insolvia-*-db*",
+      "arn:aws:rds:*:${data.aws_caller_identity.current.account_id}:db:insolvia-*-db*",
+      "arn:aws:rds:*:${data.aws_caller_identity.current.account_id}:subgrp:insolvia-*-db*",
+      "arn:aws:rds:*:${data.aws_caller_identity.current.account_id}:cluster-pg:insolvia-*-db*",
+      "arn:aws:rds:*:${data.aws_caller_identity.current.account_id}:cluster-snapshot:insolvia-*-db*",
+    ]
+  }
+
+  # The writer instance sets no DB parameter group, so RDS gives it the
+  # engine's default (default.aurora-postgresql17), and CreateDBInstance can
+  # authorize against the group it is given. Reference only — AWS refuses to
+  # modify or delete a default group whatever IAM says.
+  statement {
+    sid = "DatabaseDefaultParameterGroup"
+    actions = [
+      "rds:CreateDBInstance",
+      "rds:ModifyDBInstance",
+    ]
+    resources = ["arn:aws:rds:*:${data.aws_caller_identity.current.account_id}:pg:default.aurora-postgresql*"]
+  }
+
+  # The account's first RDS resource makes RDS create its service-linked role
+  # (AWSServiceRoleForRDS) on the caller's permissions — the same story as
+  # ApiGatewayServiceLinkedRole above, locked the same three ways. Dormant once
+  # the role exists.
+  statement {
+    sid     = "DatabaseServiceLinkedRole"
+    actions = ["iam:CreateServiceLinkedRole"]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+    ]
+
+    condition {
+      test     = "StringLike"
+      variable = "iam:AWSServiceName"
+      values   = ["rds.amazonaws.com"]
+    }
+  }
+
+
+  # manage_master_user_password: RDS generates the master password and creates
+  # the secret holding it — but as the CALLER, so CreateSecret and TagResource
+  # must be in this policy. RDS names the secret `rds!cluster-<uuid>`, not
+  # insolvia-*, so this is the tightest name fence available (and the only RDS
+  # clusters in this account are the ones DatabaseManagement allows).
+  #
+  # The secret is under the AWS-managed aws/secretsmanager key, whose key policy
+  # admits any principal in the account through Secrets Manager, so no KMS grant
+  # is needed (kms:DescribeKey is in EncryptionKeyManagement). It is NOT under
+  # the database key, deliberately (insolvia's modules/aurora): creating it
+  # there would need GenerateDataKey on a key DenyCaseDataDecryption denies.
+  #
+  # No GetSecretValue — and an explicit deny of it below, which is what holds.
+  statement {
+    sid = "DatabaseMasterSecret"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:TagResource",
+      "secretsmanager:UntagResource",
+      "secretsmanager:DeleteSecret",
+    ]
+    resources = ["arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:rds!cluster-*"]
+  }
+
+  # The exported PostgreSQL log, whose group the module creates first so that
+  # it has a retention (RDS would otherwise create it never-expiring). RDS's
+  # fixed name, /aws/rds/cluster/<cluster>/postgresql; neither LambdaLogGroups
+  # nor ApiAccessLogGroups matches it.
+  statement {
+    sid       = "DatabaseLogGroups"
+    actions   = ["logs:*"]
+    resources = ["arn:aws:logs:*:${data.aws_caller_identity.current.account_id}:log-group:/aws/rds/cluster/insolvia-*-db/*"]
+  }
+
+  # Account-level RDS reads with no resource type to fence: every
+  # aws_rds_cluster refresh asks DescribeGlobalClusters whether the cluster
+  # belongs to a global one, and DescribeDBEngineVersions is the engine
+  # catalog. Names and versions, never contents.
+  statement {
+    sid = "DatabaseDescribe"
+    actions = [
+      "rds:DescribeGlobalClusters",
+      "rds:DescribeDBEngineVersions",
+    ]
+    resources = ["*"]
+  }
+
+  # The database's master credential (insolvia ADR 0028 § Data: "only the
+  # migrator and a human break-glass use it"). DatabaseMasterSecret grants no
+  # read, so on the day this lands it adds nothing an allow-list does not
+  # already say — it exists so that no later broad grant (a secretsmanager:*
+  # for some other service's secret, say) can quietly hand the pipeline the
+  # password to every environment's database. Same reasoning as
+  # DenyFilingCredentialDecryption: a deny this role cannot edit is the control.
+  #
+  # `rds!cluster-*` is RDS's naming for every cluster's managed secret, so this
+  # covers each environment's and any cluster added later.
+  statement {
+    sid       = "DenyDatabaseMasterSecretRead"
+    effect    = "Deny"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:rds!cluster-*"]
+  }
+
+  # The managed-policy form of DenySelfPrivilegeEscalation. A managed policy is
+  # changed by publishing a new VERSION, not by PutRolePolicy, so the inline
+  # self-deny does not cover it. The role holds no allow for any of these
+  # today; this is what keeps a future broad IAM grant from becoming one.
+  # Matched by name pattern so that a third policy split off later is covered
+  # the moment it is named like these two.
+  statement {
+    sid    = "DenyDeployPolicyMutation"
+    effect = "Deny"
+    actions = [
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicyVersion",
+      "iam:SetDefaultPolicyVersion",
+      "iam:DeletePolicy",
+      "iam:TagPolicy",
+      "iam:UntagPolicy",
+    ]
+    resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/insolvia-shared-deploy-*"]
+  }
+}
+
+resource "aws_iam_policy" "github_database" {
+  name        = "insolvia-shared-deploy-database"
+  description = "CI deploy role: insolvia's modules/aurora (Aurora PostgreSQL, its master secret, its logs). See infra/envs/ci-trust/main.tf."
+  policy      = data.aws_iam_policy_document.github_database.json
+  tags        = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "github_database" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = aws_iam_policy.github_database.arn
+}
+# ── end network and database ───────────────────────────────────
 
 # ── The staging seed role ───────────────────────────────────────────
 #

@@ -164,8 +164,23 @@ module "email" {
 # `filing` is the filing worker (insolvia's services/filing, ADR 0024): its own image
 # because it is the only principal that opens the credential vault, and
 # its image carries no web layer and no fake court.
+#
+# The `-dotnet` six are insolvia's ADR 0028 rewrite (the backend moves to .NET
+# on Aurora PostgreSQL, built under insolvia's backend/). They sit BESIDE the
+# Python repositories rather than replacing them because the two backends
+# coexist until the switch (plan 18.22): the Python images keep deploying, the
+# .NET ones are built and pushed but deploy nowhere until then, and the Python
+# repositories are removed only after 18.23 deletes the Python. `worker` is the
+# .NET successor of `jobs` (same role, ADR 0018's pipeline worker), named for
+# the project it is built from (Insolvia.Worker); `migrator` is the one new
+# unit — the in-VPC Lambda that applies migrations before each alias shift.
+# Same configuration as every other repository: one for_each, so the lifecycle
+# rules below cover them by construction.
 locals {
-  container_repositories = toset(["api", "admin-api", "jobs", "marketing", "mailer", "mcp", "filing"])
+  container_repositories = toset([
+    "api", "admin-api", "jobs", "marketing", "mailer", "mcp", "filing",
+    "api-dotnet", "worker-dotnet", "admin-api-dotnet", "mcp-dotnet", "filing-dotnet", "migrator-dotnet",
+  ])
 }
 
 resource "aws_ecr_repository" "service" {
