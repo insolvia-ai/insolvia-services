@@ -1151,9 +1151,10 @@ resource "aws_iam_role_policy" "github_permissions" {
 #
 # The fence is the tag, and the tag is writable — by this role, on its own
 # resources (NetworkManagement carries CreateTags/DeleteTags). What it cannot
-# do is ADD Project=insolvia to a resource that lacks it, with one named
-# exception (DefaultSecurityGroupAdoption). So it cannot reach the default
-# VPC, or anything a human builds by hand, through these statements.
+# do is ADD Project=insolvia to a resource that lacks it — insolvia's network
+# module deliberately does not adopt the VPC's default security group, so no
+# exception is needed. It cannot reach the default VPC, or anything a human
+# builds by hand, through these statements.
 data "aws_iam_policy_document" "github_network" {
   statement {
     sid = "NetworkCreate"
@@ -1327,34 +1328,6 @@ data "aws_iam_policy_document" "github_network" {
       ]
     }
   }
-
-  # THE ONE EXCEPTION to "cannot claim what it did not create". modules/network
-  # adopts the VPC's DEFAULT security group (aws_default_security_group) to
-  # strip its allow-all rules. AWS creates that group with the VPC and tags it
-  # with nothing, so NetworkManagement's aws:ResourceTag cannot match it until
-  # it has been tagged — and no create action is involved, so neither can
-  # NetworkTagOnCreate. The provider tags the group first and then revokes its
-  # rules, so letting this role stamp Project=insolvia onto a security group is
-  # exactly what makes the adoption work.
-  #
-  # The cost, stated: this role can claim ANY security group in the account
-  # (including the default VPC's default group) by tagging it, and then manage
-  # its rules. Security groups only — not VPCs, instances or addresses — and an
-  # empty default group in an unused VPC is all the account holds that is not
-  # insolvia's. The security-group resource offers no other condition key
-  # (only ec2:Vpc, which is an ARN of a random id) to do better with.
-  statement {
-    sid       = "DefaultSecurityGroupAdoption"
-    actions   = ["ec2:CreateTags"]
-    resources = ["arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:security-group/*"]
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:RequestTag/Project"
-      values   = ["insolvia"]
-    }
-  }
-
 
   # The NAT's auto-recover alarm is the account's first alarm with an EC2
   # ACTION, and CloudWatch performs EC2 actions through its own service-linked
