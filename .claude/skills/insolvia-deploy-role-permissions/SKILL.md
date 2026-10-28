@@ -107,7 +107,13 @@ this repo, then re-run the deploy — in whichever repo it failed.
    (`insolvia-*`) or a condition over `resources = ["*"]`. Explain *why* in a
    comment — that file documents the reasoning for every grant.
 3. **Edit `infra/envs/ci-trust/main.tf`**, then `terraform -chdir=infra/envs/
-   ci-trust validate` + `terraform fmt`.
+   ci-trust validate` + `terraform fmt`. **Mind the size cap:** the inline
+   document (`github_permissions`) is within ~200 characters of IAM's
+   10,240-character limit for a role's inline policies — a new grant of any
+   size belongs in one of the attached managed policies
+   (`github_network`, `github_database`; 6,144 each) or a new
+   `insolvia-shared-deploy-<area>` one beside them. The limit is enforced at
+   apply, not by `validate`, so a too-large policy fails the human apply.
 4. **Merge**, then have the user run `scripts/apply-ci-trust.sh` (credential
    dance + plan review + apply — it refuses if run as the deploy role itself).
 5. **Re-run the failed deploy.** If it was the insolvia repo's, the insolvia

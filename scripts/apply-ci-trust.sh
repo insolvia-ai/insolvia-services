@@ -70,7 +70,9 @@ terraform -chdir="$TF_DIR" plan -input=false -out=/tmp/ci-trust.tfplan
 
 echo
 warn "Review the plan above. Expected: a change to aws_iam_role_policy.github_permissions"
-warn "(the deploy role's inline policy), and NOTHING that destroys or replaces the role"
+warn "(the deploy role's inline policy) and/or to the managed policies attached to it"
+warn "(aws_iam_policy.github_network / github_database and their attachments), and"
+warn "NOTHING that destroys or replaces the role"
 warn "or the OIDC provider. If you see a destroy/replace of either, STOP — that would"
 warn "break CI's ability to authenticate. Ctrl-C now if anything looks off."
 echo
