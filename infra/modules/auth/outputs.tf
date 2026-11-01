@@ -1,5 +1,5 @@
 # These outputs are this ROOT's view, and what the env roots here republish
-# as auth_* outputs (for humans, and for the ci-trust seed role's pool ARN).
+# as auth_* outputs (for humans, and this repo's own tooling).
 # The insolvia repo does NOT read them — it reads the SSM contract
 # (contract.tf), and keeps auth_* outputs of the same names for its own
 # deploy workflows.

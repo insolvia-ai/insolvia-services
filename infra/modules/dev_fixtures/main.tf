@@ -1,15 +1,16 @@
 # ── The shared seed-fixture bucket ──────────────────────────────
 # ONE bucket for the account, published once, loaded per environment. Every
 # reader and writer of it lives in the insolvia repo — the fixtures
-# (seeds/fixtures/), the loader (services/admin), the dev stacks (envs/dev)
-# and staging's seed step. Only the bucket is here, because it is account-wide
+# (seeds/fixtures/), the loader (the migrator, backend/; it was
+# services/admin before insolvia ADR 0028), the dev stacks (envs/dev) and
+# staging's seed step. Only the bucket is here, because it is account-wide
 # and `envs/shared` is where account-wide things live. The
 # bytes behind `seeds/fixtures/<version>/` — the sample documents a seeded
 # case carries — live here, and every dev stack and staging deploy copies
-# them server-side into its own case-documents bucket when it seeds
-# (services/admin, entrypoints/seed.py). Nothing here is case data: every
-# object is synthetic, reviewable in git under seeds/fixtures/, and the
-# loader refuses a target that is not a dev or staging environment.
+# them server-side into its own case-documents bucket when it seeds.
+# Nothing here is case data: every object is synthetic, reviewable in git
+# under seeds/fixtures/, and the loader refuses a target that is not a dev or
+# staging environment.
 #
 # WHY `envs/shared` OWNS IT, when its name says `dev`. The component says who
 # it serves; the root says whose lifecycle it has. `envs/dev` is per machine
@@ -33,8 +34,10 @@
 #   • No force_destroy, and prevent_destroy on top. It outlives every stack
 #     that reads it. Renaming it later is an out-of-band empty-then-delete.
 #   • All four public-access blocks on, ACLs off, SSE-S3. Nothing here is
-#     public: a developer reads it with their own credentials, CI with the
-#     seed role's one read grant.
+#     public: a developer reads it with their own credentials, staging
+#     through the insolvia migrator Lambda's role (its SeedFixtureRead
+#     grant, insolvia's modules/migrator). The bucket policy below names no
+#     reader: the grant lives on the reading role.
 #   • One lifecycle rule, aborting incomplete multipart uploads after seven
 #     days. Noncurrent versions are deliberately NOT expired — versioning is
 #     the recovery, and a fixture is touched a few times a year.

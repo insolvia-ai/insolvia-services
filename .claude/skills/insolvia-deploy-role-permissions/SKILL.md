@@ -33,8 +33,9 @@ The deploy role is **one role for two repositories**: CI in
 pointer skill of the same name that sends you here. One role rather than two
 is deliberate (insolvia's
 [ADR 0025](https://github.com/insolvia-ai/insolvia/blob/main/docs/adr/0025-shared-infra-and-mailer-move-to-insolvia-services.md),
-rule 2): two copies of forty scoped statements would drift. The staging
-**seed** role in the same root trusts the insolvia repo alone.
+rule 2): two copies of forty scoped statements would drift. (The root once
+held a second, staging **seed** role; it was retired after insolvia's ADR 0028
+moved staging's seeding into its migrator Lambda.)
 
 ## The rule in one line
 
@@ -132,8 +133,9 @@ scoped and explained.
 - Split the role per repository to "isolate" them. The isolation between the
   repos is which state keys and workflows each holds; two roles would only
   duplicate the policy.
-- Widen the **seed** role's trust to this repo. It writes app data, and this
-  repo has no reason to.
+- Add a data-plane grant on app data (rows, objects, a case key) to the
+  deploy role, or bring back a CI-assumed role that writes app data. Staging's
+  seeding runs as insolvia's migrator Lambda's own role, inside the VPC.
 - `terraform destroy` or blindly `apply` ci-trust without reading the plan —
   a destroy/replace of the role or OIDC provider locks CI out of AWS. The
   script guards this, but the caution stands for bare commands.

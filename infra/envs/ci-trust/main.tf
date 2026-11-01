@@ -2,7 +2,10 @@
 # The account-wide GitHub-Actions trust anchor, extracted from `shared` into
 # its own state so it is NEVER applied by CI. It owns three things and nothing
 # else: the GitHub OIDC provider, the `insolvia-shared-deploy-role`, and that
-# role's permissions policy.
+# role's permissions policies. (It also held a second role, the staging seed
+# role, until insolvia's ADR 0028 moved staging's seeding into its migrator
+# Lambda, inside the VPC, under that Lambda's own role; the seed role was
+# retired here once nothing assumed it.)
 #
 # WHY ITS OWN ROOT: the role's policy carries an explicit self-deny
 # (DenySelfPrivilegeEscalation) forbidding the role from editing its own
@@ -17,8 +20,8 @@
 #
 # READING THIS FILE FROM insolvia-services. The role deploys BOTH repositories
 # (see github_assume below), and most of what it is fenced to — the app's
-# stacks, the case and filing stores, the seed role's tables — is the insolvia
-# repo's. Unless a comment says otherwise, the modules (infra/modules/
+# stacks, the case documents and their key, the Aurora cluster — is the
+# insolvia repo's. Unless a comment says otherwise, the modules (infra/modules/
 # case_store, api_service, …), the staging/prod stacks, the workflows
 # (api-<env>.yml, app-staging.yml), seeds/ and docs/adr/ named below are that
 # repo's: https://github.com/insolvia-ai/insolvia. In this repo,
@@ -382,11 +385,20 @@ data "aws_iam_policy_document" "github_permissions" {
     resources = ["arn:aws:ecr:*:${data.aws_caller_identity.current.account_id}:repository/insolvia-*"]
   }
 
-  # Deliberately NOT dynamodb:* despite the service:* style above: the
-  # waitlist table holds signup PII, and per docs/adr/0001 the API's execution
-  # role is the only application principal that touches rows. The deploy role
-  # manages tables, never their contents — control-plane actions only, no
-  # PutItem/GetItem/Query/Scan.
+  # Deliberately NOT dynamodb:* despite the service:* style above. The deploy
+  # role manages tables, never their contents — control-plane actions only,
+  # no PutItem/GetItem/Query/Scan — so the service that owns a table is the
+  # only principal that touches its rows.
+  #
+  # WHOSE TABLES, since insolvia ADR 0028. Insolvia's own tables (waitlist,
+  # firms, cases, case access log, filing credentials, admin audit) were
+  # deleted when its backend moved to Aurora Postgres; the only DynamoDB
+  # tables left in the account are THIS repo's mailer's
+  # (modules/mailer: insolvia-<env>-mailer-{messages,suppressions}), and its
+  # Lambdas are the principals that touch their rows. The sid keeps its
+  # historical name, and the fence stays table/insolvia-* rather than being
+  # narrowed to the mailer's family in this change: narrowing is a separate,
+  # deliberate tightening, not something to fold into a role retirement.
   statement {
     sid = "WaitlistTableManagement"
     actions = [
@@ -441,7 +453,7 @@ data "aws_iam_policy_document" "github_permissions" {
   }
 
   # Control-plane only — no Decrypt, GenerateDataKey or ReEncrypt, matching
-  # the waitlist table's split above: per docs/adr/0001 the API's execution
+  # the DynamoDB statement's split above: per docs/adr/0001 the API's execution
   # role is the only application principal that touches case data.
   #
   # Note carefully what this does and does not buy. kms:PutKeyPolicy is here
@@ -489,8 +501,10 @@ data "aws_iam_policy_document" "github_permissions" {
     resources = ["*"]
   }
 
-  # DynamoDB creates a grant on the caller's behalf when a table is configured
-  # with a customer-managed key, so CreateTable fails without this. Fenced by
+  # A service that encrypts under a customer-managed key creates a grant on
+  # the caller's behalf — RDS when insolvia's Aurora cluster is created
+  # (DynamoDB did the same for insolvia's tables before ADR 0028) — so that
+  # creation fails without this. Fenced by
   # kms:GrantIsForAWSResource, which is what keeps it from being a general
   # escalation verb: the grantee can only ever be an AWS service, never a
   # principal of our choosing.
@@ -663,8 +677,9 @@ data "aws_iam_policy_document" "github_permissions" {
   }
 
   # The shared seed-fixture bucket (infra/modules/dev_fixtures, applied by CI
-  # as part of envs/shared). Its own family: it holds synthetic sample
-  # documents that every dev stack and staging copies from, and it must not
+  # as part of envs/shared). This grant MANAGES the bucket; reading fixtures
+  # is the insolvia migrator role's own grant. Its own family: it holds
+  # synthetic sample documents that every dev stack and staging copies from, and it must not
   # be reachable through the case-document grant above — one is fixtures,
   # the other is a client's tax returns, and the ARN prefix is what keeps a
   # future `insolvia-*-case-*` rename from silently widening this.
@@ -943,8 +958,10 @@ data "aws_iam_policy_document" "github_permissions" {
   # `UpdateTimeToLive` failed, taking out every staging release and the
   # production infra apply. Carving services out one at a time patched
   # instances: cloudtrail, then lambda, then dynamodb would have been next —
-  # and dynamodb could not be carved out, because case data IS DynamoDB. The
-  # discriminator was never the calling service; it is the key.
+  # and dynamodb could not be carved out, because case data WAS DynamoDB then
+  # (it is Aurora since insolvia ADR 0028, and RDS would be the next carve-out
+  # by the same logic). The discriminator was never the calling service; it is
+  # the key.
   #
   # The false negative was quieter and worse. A ViaService carve-out applies to
   # EVERY key, so the lambda and ssm exemptions permitted decrypting the CASE
@@ -974,10 +991,12 @@ data "aws_iam_policy_document" "github_permissions" {
   # Renaming there without renaming here silently stops the deny matching, which
   # is why it is spelled out.
   #
-  # THE DATABASE KEY TOO (insolvia ADR 0028). When the case data moves from
+  # THE DATABASE KEY TOO (insolvia ADR 0028). Since the case data moved from
   # DynamoDB to Aurora, `alias/insolvia-<env>-db` (modules/aurora's
-  # `alias/${local.name}`, name "insolvia-<env>-db") protects the same SSNs the
-  # case key does today — the cluster's storage, its backups and snapshots. The
+  # `alias/${local.name}`, name "insolvia-<env>-db") protects the SSNs the case
+  # key protected in DynamoDB — the cluster's storage, its backups and
+  # snapshots. The case key itself still exists and is still denied: it
+  # encrypts the case-documents bucket and seals tax ids. The
   # pipeline needs only CreateGrant and DescribeKey on it to create an encrypted
   # cluster (EncryptionKeyGrants, EncryptionKeyManagement); RDS decrypts under
   # its own grant. Same alias-laziness trade as above, same mid-string wildcard.
@@ -1021,10 +1040,10 @@ data "aws_iam_policy_document" "github_permissions" {
   # must track modules/filing_credentials' `alias/${local.name}`.
   #
   # NOT REQUIRED FOR THE VAULT TO DEPLOY. Every permission the deploy needs to
-  # create the key, its alias, the table and the worker's role is already
-  # held (EncryptionKeyCreate/Management, EncryptionKeyAliases,
-  # WaitlistTableManagement's table/insolvia-*, ServiceRoleManagement's
-  # role/insolvia-*). This is hardening, applied by a human like every change
+  # create the key, its alias and the worker's role is already held
+  # (EncryptionKeyCreate/Management, EncryptionKeyAliases,
+  # ServiceRoleManagement's role/insolvia-*; the vault's DynamoDB table, gone
+  # since insolvia ADR 0028, came under WaitlistTableManagement). This is hardening, applied by a human like every change
   # here; staging deploys with or without it.
   statement {
     sid    = "DenyFilingCredentialDecryption"
@@ -1126,8 +1145,9 @@ resource "aws_iam_role_policy" "github_permissions" {
 # policy — the managed-policy form of PutRolePolicy.
 #
 # WHAT THE MODULES ARE: modules/network is one VPC per environment (two
-# private subnets, one public subnet holding a fck-nat instance, S3 and
-# DynamoDB gateway endpoints); modules/aurora is Serverless v2 PostgreSQL
+# private subnets, one public subnet holding a fck-nat instance, an S3
+# gateway endpoint — a DynamoDB one sat beside it until insolvia's tables were
+# deleted); modules/aurora is Serverless v2 PostgreSQL
 # under its own key, its master password held by RDS in Secrets Manager.
 #
 # WHAT IS ALREADY HELD, in the inline document, and so not repeated here: the
@@ -1563,292 +1583,3 @@ resource "aws_iam_role_policy_attachment" "github_database" {
   policy_arn = aws_iam_policy.github_database.arn
 }
 # ── end network and database ───────────────────────────────────
-
-# ── The staging seed role ───────────────────────────────────────────
-#
-# A SECOND ROLE, and the separation is the whole point. app-staging.yml loads
-# seeds/staging.json into the staging firm table before the E2E suite runs,
-# because the first firm cannot come from the API (ADR 0009: POST
-# /v1/firm/users is itself behind FIRM_ADMINISTRATION) and an unseeded staging
-# fails intake-persists.spec.ts on a case list that can never populate.
-#
-# WHY NOT WIDEN THE DEPLOY ROLE. Its policy says, deliberately, that it
-# "manages tables, never their contents — control-plane actions only, no
-# PutItem/GetItem/Query/Scan", and it carries DenyCaseDataDecryption to keep it
-# away from the case KMS key. Adding a data-plane grant there would hand every
-# job in every workflow the ability to write tenancy rows — and a firm-user row
-# IS an access grant. A separate role keeps that property intact: the deploy
-# role's deny is untouched, because a deny in one role's policy has nothing to
-# do with another role's.
-#
-# WHY IT NEEDS THE CASE KEY AT ALL. insolvia's infra/envs/staging/main.tf gives the firm
-# store the case store's key on purpose — "firm membership decides who reads
-# case data, and one deny should cover both" — so writing a firm row requires
-# GenerateDataKey on `alias/insolvia-staging-cases`. That is the uncomfortable
-# part of this design and it is bounded rather than waved away: the grant is
-# staging's key only, usable only through DynamoDB, and this role has no
-# DynamoDB access to the CASE table, so the key buys nothing it can decrypt.
-# Splitting the firm store onto its own key would remove even that and is the
-# better long-term answer; it changes a decision that has an ADR behind it, so
-# it is not smuggled in here.
-data "aws_iam_policy_document" "github_seed_assume" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    effect  = "Allow"
-
-    principals {
-      type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-
-    # NARROWER THAN THE DEPLOY ROLE'S TRUST, which accepts any `sub` from
-    # either repo. This one trusts the insolvia repo ALONE (var.github_repo):
-    # the seed writes app data, and insolvia-services has no reason to. This one accepts only tokens minted for the `insolvia-staging`
-    # ENVIRONMENT, so a job that does not declare `environment:
-    # insolvia-staging` cannot assume it — the same gate that already guards
-    # the E2E credentials. Both subject forms, for the reason github_assume
-    # records: the org enforces immutable subject claims today, and the mutable
-    # form is kept so this survives that being turned off.
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "${var.github_immutable_sub_prefix}:environment:insolvia-staging",
-        "repo:${var.github_repo}:environment:insolvia-staging",
-      ]
-    }
-  }
-}
-
-resource "aws_iam_role" "github_seed" {
-  name               = "insolvia-staging-seed-role"
-  assume_role_policy = data.aws_iam_policy_document.github_seed_assume.json
-  tags               = local.common_tags
-}
-
-data "aws_iam_policy_document" "github_seed_permissions" {
-  # The firm table and its by-subject index, in staging. No Scan: the loader
-  # converges by looking up the people the fixture names, so it never needs
-  # to enumerate a firm it was not told about. No DeleteItem: unseeding is
-  # dev's `dev-aws-reset.sh`, which is a different principal.
-  statement {
-    sid = "StagingFirmTableRows"
-    actions = [
-      "dynamodb:PutItem",
-      "dynamodb:GetItem",
-      "dynamodb:Query",
-    ]
-    resources = [
-      "arn:aws:dynamodb:*:${data.aws_caller_identity.current.account_id}:table/insolvia-staging-firms",
-      "arn:aws:dynamodb:*:${data.aws_caller_identity.current.account_id}:table/insolvia-staging-firms/index/*",
-    ]
-  }
-
-  # THE CASE TABLE, in staging, since the seed grew cases (seeds/fixtures/).
-  # The same verbs as the firm table plus what a transaction needs:
-  # CaseStore.create writes the case and its assignment as ONE
-  # TransactWriteItems, and IAM authorises a transaction by the per-item
-  # actions it contains (PutItem, plus ConditionCheckItem for the
-  # attribute_not_exists guards). UpdateItem is DocumentStore.update, which
-  # is how a seeded document goes from `pending` to `stored`. No Scan, no
-  # DeleteItem, for the firm table's reasons.
-  #
-  # THIS IS A DATA-PLANE GRANT ON THE CASE TABLE, and it is bounded the way
-  # the firm grant is: staging only, exact table name, and the role is
-  # assumable only by a job carrying the `insolvia-staging` environment.
-  # Staging holds synthetic cases and nothing else; the deploy role's
-  # DenyCaseDataDecryption is untouched (it is a different role) and prod's
-  # table is not named here in any form.
-  statement {
-    sid = "StagingCaseTableRows"
-    actions = [
-      "dynamodb:PutItem",
-      "dynamodb:GetItem",
-      "dynamodb:Query",
-      "dynamodb:UpdateItem",
-      "dynamodb:ConditionCheckItem",
-    ]
-    resources = [
-      "arn:aws:dynamodb:*:${data.aws_caller_identity.current.account_id}:table/insolvia-staging-cases",
-      "arn:aws:dynamodb:*:${data.aws_caller_identity.current.account_id}:table/insolvia-staging-cases/index/*",
-    ]
-  }
-
-  # The key the firm table AND the case table are encrypted with, reachable
-  # ONLY through DynamoDB (below) and S3 (further below).
-  #
-  # Scoped by alias for the same reason DenyCaseDataDecryption is: this root is
-  # applied by a human before staging exists, so it cannot know the key ARN.
-  # The value must track infra/modules/case_store's `alias/${local.name}` —
-  # renaming there without renaming here does not fail the apply, it silently
-  # stops this matching and the seed step starts failing with AccessDenied.
-  #
-  # `insolvia-staging-cases` exactly, not `insolvia-*-cases`: a wildcard would
-  # reach the prod case key.
-  statement {
-    sid = "StagingCaseKeyThroughDynamoDbOnly"
-    actions = [
-      "kms:Decrypt",
-      "kms:GenerateDataKey",
-      "kms:DescribeKey",
-    ]
-    resources = ["*"]
-
-    condition {
-      test     = "ForAnyValue:StringEquals"
-      variable = "kms:ResourceAliases"
-      values   = ["alias/insolvia-staging-cases"]
-    }
-
-    # Without this the grant would be usable from anywhere — the CLI, a Lambda,
-    # any service. With it, the only way to exercise it is a DynamoDB call, and
-    # the statement above bounds those to one table.
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["dynamodb.${var.aws_region}.amazonaws.com"]
-    }
-  }
-
-  # The same key, DIRECTLY this time, for one purpose (issue 13.12 / #382):
-  # a fixture debtor's tax id is sealed by the loader exactly as the API
-  # seals one — a data key generated under the case key with the tax-id
-  # encryption context (insolvia_core.tax_ids) — and that call comes from
-  # the loader itself, not through DynamoDB, so neither ViaService fence
-  # covers it. Bounded the way modules/case_store's TaxIdKeyUse bounds the
-  # API's own: the context's `purpose` member must be the one the code
-  # stamps, so nothing else sealed under this key is reachable through it.
-  # GenerateDataKey ONLY — the loader writes identifiers and never reads
-  # one back (a captured fixture drops the tax id; the loader's docstring
-  # says why), so it never needs Decrypt. Same alias, same staging-only
-  # reasoning as the two statements around it.
-  statement {
-    sid       = "StagingCaseKeyForTaxIdSealing"
-    actions   = ["kms:GenerateDataKey"]
-    resources = ["*"]
-
-    condition {
-      test     = "ForAnyValue:StringEquals"
-      variable = "kms:ResourceAliases"
-      values   = ["alias/insolvia-staging-cases"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:purpose"
-      values   = ["debtor-tax-id"]
-    }
-  }
-
-  # Staging's case-documents bucket, for the sample documents a seeded case
-  # carries. PutObject is the server-side copy out of the fixture bucket;
-  # GetObject is what HeadObject is authorised by (the loader confirms the
-  # copy landed exactly as the API's `complete` route does); PutObjectTagging
-  # is the empty tag set that keeps the bucket's unconfirmed-upload reaper
-  # away from a seeded object. No ListBucket, no DeleteObject: the case
-  # table is the record of what should be there, and unseeding is not this
-  # role's job.
-  #
-  # `insolvia-staging-case-documents-*` exactly — the region suffix is the
-  # only wildcard — so this cannot reach prod's bucket or dev's.
-  statement {
-    sid = "StagingCaseDocumentObjects"
-    actions = [
-      "s3:PutObject",
-      "s3:GetObject",
-      "s3:PutObjectTagging",
-    ]
-    resources = ["arn:aws:s3:::insolvia-staging-case-documents-*/*"]
-  }
-
-  # The same case key, through S3 this time: the document bucket encrypts
-  # every object under it (modules/case_documents), so the copy above needs
-  # GenerateDataKey and the HeadObject needs nothing, but a later GetObject
-  # would need Decrypt. Bounded exactly as the DynamoDB statement is — the
-  # alias, and the one calling service.
-  statement {
-    sid = "StagingCaseKeyThroughS3Only"
-    actions = [
-      "kms:Decrypt",
-      "kms:GenerateDataKey",
-      "kms:DescribeKey",
-    ]
-    resources = ["*"]
-
-    condition {
-      test     = "ForAnyValue:StringEquals"
-      variable = "kms:ResourceAliases"
-      values   = ["alias/insolvia-staging-cases"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["s3.${var.aws_region}.amazonaws.com"]
-    }
-  }
-
-  # The shared fixture bucket (infra/modules/dev_fixtures): read only. The
-  # objects are synthetic sample documents and the manifest that checksums
-  # them; the loader copies them server-side into the bucket above. Writing
-  # a fixture is `seed publish`, run by a developer under their own
-  # credentials — CI never curates fixtures.
-  statement {
-    sid = "DevFixtureObjectsRead"
-    actions = [
-      "s3:GetObject",
-      "s3:ListBucket",
-    ]
-    resources = [
-      "arn:aws:s3:::insolvia-shared-dev-fixtures-*",
-      "arn:aws:s3:::insolvia-shared-dev-fixtures-*/*",
-    ]
-  }
-
-  # The staging pool's accounts — the people seeds/staging.json names.
-  #
-  # WHY THE PIPELINE CREATES THEM. Every test account used to be a human run of
-  # a script plus two secrets, and adding a second one meant doing that again.
-  # The tenancy model is about several people with different reach, so a suite
-  # that can only sign in as one of them cannot test what the model is for.
-  # Now the fixture is the list and this grant is what lets CI converge on it.
-  #
-  # WHY AdminSetUserPassword IS HERE, which is the uncomfortable action: an
-  # account created by AdminCreateUser sits in FORCE_CHANGE_PASSWORD, and the
-  # hosted UI answers that with a screen a browser test cannot complete — the
-  # job hangs to its timeout. Setting a permanent password is the only way to
-  # make a created account signable-in. It is an impersonation primitive, and
-  # it is bounded by the ARN: staging holds no customer data, and CI already
-  # holds that password as a secret, so the marginal capability is over
-  # throwaway identities in a throwaway environment.
-  #
-  # CONDITIONAL ON THE ARN BEING KNOWN. Empty on a fresh bootstrap, because
-  # this root is applied before staging exists; the statement then does not
-  # exist and the seed step fails loudly on AccessDenied rather than reaching
-  # anything it should not. See the variable's own description.
-  dynamic "statement" {
-    for_each = var.staging_user_pool_arn == "" ? [] : [var.staging_user_pool_arn]
-
-    content {
-      sid = "StagingPoolTestAccounts"
-      actions = [
-        "cognito-idp:AdminGetUser",
-        "cognito-idp:AdminCreateUser",
-        "cognito-idp:AdminSetUserPassword",
-      ]
-      resources = [statement.value]
-    }
-  }
-}
-
-resource "aws_iam_role_policy" "github_seed_permissions" {
-  name   = "insolvia-staging-seed-firms"
-  role   = aws_iam_role.github_seed.id
-  policy = data.aws_iam_policy_document.github_seed_permissions.json
-}

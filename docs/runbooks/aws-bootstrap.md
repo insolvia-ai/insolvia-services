@@ -47,9 +47,8 @@ eval "$(aws configure export-credentials --format env)"
 
 `infra/envs/ci-trust` owns the GitHub OIDC provider, the
 `insolvia-shared-deploy-role` deploy role (assumed by CI in **both** repos),
-that role's permissions policy, and the staging seed role (assumed by
-insolvia's CI alone). It is **applied only by a human admin — never by CI —
-and that is the point**: the role's own policy denies it `iam:PutRolePolicy`
+and that role's permissions policies. It is **applied only by a human admin —
+never by CI — and that is the point**: the role's own policy denies it `iam:PutRolePolicy`
 on itself, so a privilege change cannot take effect from merged code alone.
 There is deliberately **no `ci-trust-*.yml` workflow** in either repo.
 
@@ -163,9 +162,8 @@ applying.
 ## 4. Apply the trust anchor, then shared infra
 
 Apply `ci-trust` first, because `shared` — and everything after it, in both
-repos — is applied *as* the deploy role `ci-trust` creates. Leave
-`staging_user_pool_arn` empty on this first apply: the staging pool does not
-exist yet (step 11 comes back for it).
+repos — is applied *as* the deploy role `ci-trust` creates. `ci-trust` reads
+nothing from any later step, so this one apply is all it needs.
 
 ```bash
 scripts/apply-ci-trust.sh
@@ -310,19 +308,10 @@ insolvia's API already points at the mailer: its roots construct
 step. The mailer's invoke grant on insolvia's API role is created here, so
 sends start working once this apply lands.
 
-## 11. Close the loop on `ci-trust`
-
-Now that the staging Cognito pool exists (step 8), set `staging_user_pool_arn`
-in `infra/envs/ci-trust/variables.tf` (`terraform -chdir=infra/envs/staging
-output -raw auth_user_pool_arn` in this repo), merge, and run
-`scripts/apply-ci-trust.sh` again. Until then the staging seed role holds no
-Cognito grant and insolvia's seed step fails with `AccessDenied`.
-
 ## Order of operations
 
 1 (state bucket) → 2 (confirm no OIDC provider; check repo ids) → **3 (import
 the hosted zone)** → 4 (`ci-trust`, then `shared`) → 5 (secrets, environments,
 rulesets in both repos) → 6 (verify delegation + cert) → 7 (Cognito SLR) →
 **8 (auth, targeted, here)** → 9 (insolvia's environments) → 10 (the
-mailer's, which also brings auth under its normal workflow) → 11 (`ci-trust`
-again, with the staging pool).
+mailer's, which also brings auth under its normal workflow).

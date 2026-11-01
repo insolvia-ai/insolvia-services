@@ -8,7 +8,7 @@ model; [`../docs/runbooks/aws-bootstrap.md`](../docs/runbooks/aws-bootstrap.md)
 stands it up in a fresh account.
 
 ```
-envs/ci-trust/        OIDC provider + insolvia-shared-deploy-role (both repos deploy with it) + the staging seed role — human-applied only
+envs/ci-trust/        OIDC provider + insolvia-shared-deploy-role (both repos deploy with it) — human-applied only
 envs/account-access/  human IAM users + groups + their attached policies — human-applied; CI has no IAM user/group permissions at all
 envs/shared/          zone insolvia.ai, *.insolvia.ai cert, SES identity + mail DNS, every service's ECR repository, the seed-fixture bucket
 envs/staging/         the staging mailer (staging-mailer-api.insolvia.ai)
