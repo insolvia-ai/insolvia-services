@@ -1,5 +1,5 @@
 variable "project" {
-  description = "Name prefix. The bucket must stay in the insolvia-*-dev-fixtures-* family — ci-trust's DevFixtureBucket grant (deploy role) and DevFixtureObjectsRead grant (seed role) are scoped to exactly that prefix."
+  description = "Name prefix. The bucket must stay in the insolvia-*-dev-fixtures-* family — ci-trust's DevFixtureBucket grant (deploy role) is scoped to exactly that prefix, and insolvia's readers expect the insolvia-shared-dev-fixtures-<region> name."
   type        = string
   default     = "insolvia"
 }

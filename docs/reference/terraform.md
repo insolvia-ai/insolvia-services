@@ -25,8 +25,7 @@ infra/
 │   └── dev_fixtures/    # the account's one seed-fixture bucket
 └── envs/
     ├── ci-trust/        # GitHub OIDC provider, insolvia-shared-deploy-role
-    │                    #   (trusted by both repos) + its policy, and the
-    │                    #   staging seed role (trusted by insolvia alone)
+    │                    #   (trusted by both repos) + its policies
     ├── account-access/  # the account's HUMAN IAM principals
     ├── shared/          # zone insolvia.ai · ACM *.insolvia.ai (+ apex SAN) ·
     │                    #   module.email · every service's ECR repository ·
@@ -37,7 +36,7 @@ infra/
 
 | Root | State key (`s3://insolvia-shared-terraform-state-us-east-1/…`) | Owns | Applied by |
 |---|---|---|---|
-| ci-trust | `insolvia/ci-trust/terraform.tfstate` | The OIDC provider, the deploy role and its policies (one inline, plus the managed `insolvia-shared-deploy-{network,database}` — the inline one is at IAM's size cap), the staging seed role | a human only (below) |
+| ci-trust | `insolvia/ci-trust/terraform.tfstate` | The OIDC provider, the deploy role and its policies (one inline, plus the managed `insolvia-shared-deploy-{network,database}` — the inline one is at IAM's size cap) | a human only (below) |
 | account-access | `insolvia/account-access/terraform.tfstate` | Human IAM users, their groups, the policies attached to them | a human only; CI *cannot* (below) |
 | shared | `insolvia/shared/terraform.tfstate` | Zone, wildcard cert, SES identity + mail DNS, the container repositories (`insolvia-shared-{api,admin-api,jobs,marketing,mailer,mcp,filing}`, and insolvia ADR 0028's `insolvia-shared-{api,worker,admin-api,mcp,filing,migrator}-dotnet`), the seed-fixture bucket `insolvia-shared-dev-fixtures-us-east-1` | CI, first leg of `release.yml` |
 | staging | `insolvia-services/staging/terraform.tfstate` | The staging mailer | CI, `mailer-staging.yml` |
@@ -249,7 +248,10 @@ repo's `seeds/fixtures/<version>/`, copied server-side into every dev stack
 and into staging when they are seeded. Every reader and writer is in the
 insolvia repo; only the bucket is here, because it is account-wide and must
 be out of reach of any one environment's teardown. CI applies the bucket and
-never writes to it.
+never writes to it. Staging reads it through the insolvia migrator Lambda's
+own role (insolvia's `infra/modules/migrator`, since its ADR 0028); the
+bucket's policy names no reader — it only denies non-TLS access — so the
+grant lives on the reading role, and nothing in `ci-trust` reads fixtures.
 
 ## Providers
 

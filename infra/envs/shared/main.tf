@@ -275,9 +275,9 @@ resource "aws_ecr_lifecycle_policy" "service" {
 # case carries. Account-level rather than per environment because every
 # developer's stack and every staging deploy copies from the same objects,
 # and neither is allowed to own something the other depends on. The module
-# header has the posture; the insolvia repo's services/admin seed loader is
-# the reader and `seed publish` the writer — the fixtures themselves
-# (seeds/fixtures/) are that repo's too. Only the bucket is here.
+# header has the posture; the insolvia repo's seed loader (its migrator,
+# since ADR 0028) is the reader and `seed publish` the writer — the fixtures
+# themselves (seeds/fixtures/) are that repo's too. Only the bucket is here.
 module "dev_fixtures" {
   source = "../../modules/dev_fixtures"
 

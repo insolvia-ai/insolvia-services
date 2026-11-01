@@ -69,10 +69,11 @@ aren't working.
   this repo's environment roots are `insolvia-services/<env>/…`. Each
   environment is its own `envs/<root>/` dir — **never** Terraform workspaces.
 - **The `ci-trust` root** (OIDC provider + `insolvia-shared-deploy-role` + its
-  policy + the staging seed role) is applied by a **human, never CI**
+  policies) is applied by a **human, never CI**
   (`DenySelfPrivilegeEscalation`) — `scripts/apply-ci-trust.sh`; skill
-  `insolvia-deploy-role-permissions`. The deploy role trusts **both** repos;
-  the seed role trusts insolvia **only** (it writes app data).
+  `insolvia-deploy-role-permissions`. The deploy role trusts **both** repos.
+  It holds no data-plane grant on app data: staging's seeding runs as
+  insolvia's migrator Lambda's own role (insolvia ADR 0028), not a role here.
 - **The `account-access` root** holds the **human** IAM users and groups —
   `scripts/apply-account-access.sh`, human-applied. CI cannot apply it: the
   deploy role has no `iam:*User*`/`iam:*Group*` action at all, deliberately,
