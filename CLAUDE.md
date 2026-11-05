@@ -1,5 +1,7 @@
 # insolvia-services — agent guide
 
+> **AWS is paused (2026-11-05).** Only DNS, the certificate, the SES identity and the dev Cognito pool remain. Deploy workflows are disabled; do not re-enable them or apply Terraform, because `shared` would recreate the container repositories and fixture bucket. See insolvia's [docs/runbooks/aws-paused.md](https://github.com/insolvia-ai/insolvia/blob/main/docs/runbooks/aws-paused.md).
+
 Insolvia's **account-wide AWS infrastructure** (Terraform: `shared`,
 `ci-trust`, `account-access`), the **mailer** — the transactional-email
 platform the app's API sends through — and **auth**, the Cognito user pools
